@@ -362,7 +362,12 @@ export default function LoginPortal({ onLoginSuccess, onForbidden, isDarkMode, o
       )}
 
       {/* Header / Brand */}
-      <header className="w-full max-w-7xl mx-auto flex items-center justify-between z-10 py-2">
+      <motion.header
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.2, ease: 'easeInOut' }}
+        className="w-full max-w-7xl mx-auto flex items-center justify-between z-10 py-2"
+      >
         <div className="flex items-center gap-3">
           <NabsLodgeLogo size="md" />
           <div>
@@ -398,13 +403,18 @@ export default function LoginPortal({ onLoginSuccess, onForbidden, isDarkMode, o
             Unified Gateway Active
           </div>
         </div>
-      </header>
+      </motion.header>
 
       {/* Main Grid */}
       <main className="w-full max-w-5xl mx-auto my-auto grid grid-cols-1 lg:grid-cols-12 gap-8 items-center z-10 py-8">
         
         {/* Left Column: Brand Context / Instructions */}
-        <div className="lg:col-span-7 flex flex-col gap-6 text-left lg:pr-6">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.2, ease: 'easeInOut' }}
+          className="lg:col-span-7 flex flex-col gap-6 text-left lg:pr-6"
+        >
           <span className={`inline-flex self-start items-center gap-1.5 px-3 py-1 border rounded-full text-xs font-medium ${
             isDarkMode 
               ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' 
@@ -427,13 +437,20 @@ export default function LoginPortal({ onLoginSuccess, onForbidden, isDarkMode, o
           }`}>
             Welcome to Nabslodge’s unified administrative center. Log in with your credentials to automatically open your designated operations panel for <strong className={isDarkMode ? 'text-zinc-200' : 'text-slate-800'}>Annex (KNUST-Bomso)</strong> or <strong className={isDarkMode ? 'text-zinc-200' : 'text-slate-800'}>Ayigya (SG Mall)</strong>.
           </p>
-        </div>
+        </motion.div>
 
         {/* Right Column: Beautiful Login Card */}
         <div className="lg:col-span-5">
           <motion.div 
-            animate={shake ? { x: [-10, 10, -10, 10, 0] } : {}}
-            transition={{ duration: 0.4 }}
+            initial={{ opacity: 0 }}
+            animate={{
+              opacity: 1,
+              ...(shake ? { x: [-10, 10, -10, 10, 0] } : {})
+            }}
+            transition={{
+              duration: shake ? 0.4 : 0.2,
+              ease: "easeInOut"
+            }}
             className={`border rounded-3xl p-6 sm:p-8 shadow-2xl relative transition-all ${
             isDarkMode ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-slate-200'
           }`}>
@@ -613,7 +630,11 @@ export default function LoginPortal({ onLoginSuccess, onForbidden, isDarkMode, o
       </main>
 
       {/* Footer */}
-      <footer className={`w-full max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between border-t pt-4 mt-8 z-10 text-xs ${
+      <motion.footer
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.2, ease: 'easeInOut' }}
+        className={`w-full max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between border-t pt-4 mt-8 z-10 text-xs ${
         isDarkMode ? 'border-zinc-900 text-zinc-600' : 'border-slate-200/60 text-slate-400'
       }`}>
         <p>© 2026 Nabslodge. All rights reserved. | Web app developed by SUALAH TELLEM (0553189032)</p>
@@ -622,7 +643,7 @@ export default function LoginPortal({ onLoginSuccess, onForbidden, isDarkMode, o
           <span>•</span>
           <span>Security & Standards Compliant</span>
         </div>
-      </footer>
+      </motion.footer>
     </div>
   );
 }

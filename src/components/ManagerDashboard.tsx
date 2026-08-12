@@ -295,6 +295,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                   table { width: 100%; border-collapse: collapse; margin: 16px 0; }
                   th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; }
                   th { background-color: #f3f4f6; font-weight: 600; }
+                  .flex-row { display: flex !important; flex-direction: row !important; align-items: center !important; gap: 16px !important; }
                   .no-print, button, [data-html2canvas-ignore] { display: none !important; }
                 </style>
               </head>
@@ -1792,10 +1793,8 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
         const data = doc.data() || {};
         usersData.push({ id: doc.id, ...data } as User);
       });
-      if (usersData.length > 0) {
-        setUsers(usersData.filter(u => u.role && u.role.toLowerCase() === 'receptionist'));
-        saveUsers(usersData);
-      }
+      setUsers(usersData.filter(u => u.role && u.role.toLowerCase() === 'receptionist'));
+      saveUsers(usersData);
     }, (error) => {
       console.warn("Firestore Users Subscription Error:", error);
     });
@@ -1853,15 +1852,11 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     });
 
     const unsubDrinkSales = onSnapshot(collection(db, 'drinkSales'), (snapshot) => {
-      if (snapshot.empty) {
-        setDrinkSales(getDrinkSales());
-        return;
-      }
       const salesData: DrinkSale[] = [];
       snapshot.forEach((doc) => {
         salesData.push({ id: doc.id, ...doc.data() } as DrinkSale);
       });
-      const sorted = salesData.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      const sorted = salesData.sort((a, b) => getSafeTime(b.timestamp) - getSafeTime(a.timestamp));
       setDrinkSales(sorted);
       saveDrinkSales(sorted);
     }, (error) => {
@@ -2968,7 +2963,15 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     const revenue = baseLodgingRevenue + extensionRevenue + activityRevenue + barRevenue;
 
     const totalRmsCount = branchRooms.length;
-    const occupiedCount = branchRooms.filter(r => r.status === 'Occupied').length;
+    const occupiedCount = branchRooms.filter(r => {
+      const isStatusOccupied = r.status === 'Occupied' || !!r.guestName;
+      const hasActiveBooking = bookings.some(b => 
+        (b.roomId === r.id || String(b.roomNumber) === String(r.roomNumber)) && 
+        (b.branch === branch || !b.branch) && 
+        (b.status === 'CheckedIn' || b.status === 'checked_in')
+      );
+      return isStatusOccupied || hasActiveBooking;
+    }).length;
     const maintenanceCount = branchRooms.filter(r => r.status === 'Maintenance').length;
     const occupancyRate = totalRmsCount > 0 ? (occupiedCount / totalRmsCount) * 100 : 0;
 
@@ -3464,7 +3467,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
           : '-translate-x-full md:translate-x-0 hidden md:flex'
       }`}>
         <div className="p-6 border-b border-zinc-200 dark:border-zinc-800">
-          <div className="flex items-center gap-3 mb-4">
+          <div className="flex items-center gap-4 mb-4 mb-4">
             <NabsLodgeLogo size="md" />
             <div>
               <h1 className="font-bold tracking-tight leading-tight text-zinc-900 dark:text-zinc-50">Nabslodge<br/>Management</h1>
@@ -3685,9 +3688,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
               <Menu className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm shadow-sm bg-blue-600 text-white shadow-blue-500/15">
-                M
-              </div>
+              <NabsLodgeLogo size="xs" />
               <h1 className="font-bold tracking-tight text-sm text-zinc-900 dark:text-zinc-50">Manager</h1>
             </div>
           </div>
@@ -3712,10 +3713,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
             {activeTab === 'overview' && (
               <motion.div
                 key="overview"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: 'easeInOut' }}
                 className="space-y-6"
               >
                 {/* Manager Pending Booking Edit Notification Banner */}
@@ -4309,10 +4310,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
             {activeTab === 'receptionists' && (
               <motion.div
                 key="receptionists"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: 'easeInOut' }}
                 className="space-y-6"
               >
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -4441,10 +4442,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
             {activeTab === 'rooms' && (
               <motion.div
                 key="rooms"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: 'easeInOut' }}
                 className="space-y-6"
               >
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -4615,10 +4616,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
             {activeTab === 'settings' && (
               <motion.div
                 key="settings"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: 'easeInOut' }}
                 className="space-y-6"
               >
                 <div className={`border rounded-3xl p-6 ${theme.card}`}>
@@ -6533,7 +6534,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                         return (
                           <div className="space-y-8">
                             {branchesToDisplay.map(branchName => {
-                              const branchRooms = filtered.filter(r => r.branch === branchName);
+                              const branchRooms = filtered.filter(r => r.branch === branchName).map(r => {
+                                const isOccupied = r.status === 'Occupied' || !!r.guestName || bookings.some(b => (b.roomId === r.id || String(b.roomNumber) === String(r.roomNumber)) && b.branch === branchName && (b.status === 'CheckedIn' || b.status === 'checked_in'));
+                                return { ...r, status: isOccupied ? 'Occupied' : r.status };
+                              });
                               if (branchRooms.length === 0 && liveViewBranchFilter === 'ALL') return null;
 
                               return (
@@ -6660,10 +6664,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
             {activeTab === 'financials' && (
               <motion.div
                 key="financials"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: 'easeInOut' }}
                 className="space-y-6"
               >
                 <div>
@@ -7243,15 +7247,21 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                           <div id="yearly-print-container">
                             {/* Print Only Header */}
                             <div className="hidden print:block mb-6 border-b pb-4">
-                              <div className="flex items-center gap-3 mb-2">
-                                <NabsLodgeLogo size="sm" />
-                                <div>
-                                  <h1 className="text-2xl font-extrabold text-slate-900">NABS LODGE - Annual Report Reference Summary</h1>
+                              <table style={{ width: '100%', marginBottom: '8px', border: 'none', tableLayout: 'fixed' }}>
+      <tbody>
+        <tr>
+          <td style={{ width: '48px', verticalAlign: 'middle', border: 'none', padding: '0 16px 0 0' }}>
+            <NabsLodgeLogo size="sm" />
+          </td>
+          <td style={{ verticalAlign: 'middle', border: 'none', padding: '0' }}>
+            <h1 className="text-2xl font-extrabold text-slate-900" style={{ margin: 0 }}>NABS LODGE - Annual Report Reference Summary</h1>
                                   <p className="text-xs text-slate-500 mt-0.5">
                                     Generated on {new Date().toLocaleDateString('en-US', { dateStyle: 'full' })} | Operator: {currentUser.name} (Manager)
                                   </p>
-                                </div>
-                              </div>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
                               <div className="grid grid-cols-2 gap-4 mt-4 text-xs">
                                 <div><strong className="text-slate-700">Reporting Year:</strong> {selectedYear}</div>
                                 <div><strong className="text-slate-700">Scope:</strong> Global (Annex & Ayigya Branches)</div>

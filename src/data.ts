@@ -4,6 +4,8 @@
  */
 
 import { User, Room, Booking, AuditLog, Branch, RoomStatus, BookingStatus, PaymentStatus, Role, StaffUpdateInput, GlobalSettings, HandoverRecord, HandoverItemBreakdown, DrinkItem, DrinkSale } from './types';
+import { db, safeSetDoc, safeUpdateDoc, safeDeleteDoc } from './firebase';
+import { doc } from 'firebase/firestore';
 
 const USERS_KEY = 'nabslodge_users';
 const HANDOVERS_KEY = 'nabslodge_handovers';
@@ -48,6 +50,9 @@ export const getSettings = (): GlobalSettings => {
 
 export const saveSettings = (settings: GlobalSettings) => {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  if (db) {
+    safeSetDoc(doc(db, 'settings', 'global'), settings, { merge: true });
+  }
 };
 
 export const initialActivityCatalog: any[] = [];
@@ -72,6 +77,9 @@ export const deleteActivityCatalogItem = async (id: string) => {
   const catalog = getActivityCatalog();
   const filtered = catalog.filter((item) => item.id !== id);
   localStorage.setItem(ACTIVITY_CATALOG_KEY, JSON.stringify(filtered));
+  if (db) {
+    safeDeleteDoc(doc(db, 'ActivityCatalog', id));
+  }
 };
 
 // Helper to generate IDs
@@ -491,7 +499,42 @@ export const addDrink = (drink: Omit<DrinkItem, 'id'>): DrinkItem => {
   };
   drinks.unshift(newDrink);
   saveDrinks(drinks);
+  if (db) {
+    safeSetDoc(doc(db, 'drinks', newDrink.id), newDrink, { merge: true });
+  }
   return newDrink;
+};
+
+export const safeParseDateTimestamp = (str?: string): number => {
+  if (!str) return 0;
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) return d.getTime();
+
+  const parts = String(str).trim().split(' ');
+  if (parts.length >= 2) {
+    const dateParts = parts[0].split('/');
+    if (dateParts.length === 3) {
+      const day = parseInt(dateParts[0], 10);
+      const month = parseInt(dateParts[1], 10) - 1;
+      const year = parseInt(dateParts[2], 10);
+      let hour = 0;
+      let minute = 0;
+      let second = 0;
+      const timeStr = parts[1];
+      const ampm = parts[2] ? parts[2].toUpperCase() : '';
+      const timeParts = timeStr.split(':');
+      if (timeParts.length >= 2) {
+        hour = parseInt(timeParts[0], 10);
+        minute = parseInt(timeParts[1], 10);
+        if (timeParts[2]) second = parseInt(timeParts[2], 10);
+        if (ampm === 'PM' && hour < 12) hour += 12;
+        if (ampm === 'AM' && hour === 12) hour = 0;
+      }
+      const parsedD = new Date(year, month, day, hour, minute, second);
+      if (!isNaN(parsedD.getTime())) return parsedD.getTime();
+    }
+  }
+  return 0;
 };
 
 export const getDrinkSales = (): DrinkSale[] => {
@@ -499,7 +542,7 @@ export const getDrinkSales = (): DrinkSale[] => {
   if (!data) return [];
   try {
     const parsed: DrinkSale[] = JSON.parse(data);
-    return parsed.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    return parsed.sort((a, b) => safeParseDateTimestamp(b.timestamp) - safeParseDateTimestamp(a.timestamp));
   } catch (e) {
     return [];
   }
@@ -516,6 +559,9 @@ export const updateDrinkSale = (sale: DrinkSale): { success: boolean; error?: st
   
   sales[index] = sale;
   saveDrinkSales(sales);
+  if (db) {
+    safeUpdateDoc(doc(db, 'drinkSales', sale.id), { status: sale.status, quantity: sale.quantity, totalPrice: sale.totalPrice, paymentMethod: sale.paymentMethod, note: sale.note });
+  }
   return { success: true };
 };
 
@@ -526,6 +572,9 @@ export const deleteDrinkSale = (id: string): { success: boolean; error?: string 
   
   const filtered = sales.filter((s) => s.id !== id);
   saveDrinkSales(filtered);
+  if (db) {
+    safeDeleteDoc(doc(db, 'drinkSales', id));
+  }
   return { success: true };
 };
 
@@ -539,6 +588,9 @@ export const addDrinkSale = (sale: Omit<DrinkSale, 'id' | 'timestamp'>): DrinkSa
   };
   sales.unshift(newSale);
   saveDrinkSales(sales);
+  if (db) {
+    safeSetDoc(doc(db, 'drinkSales', newSale.id), newSale, { merge: true });
+  }
   return newSale;
 };
 
@@ -579,6 +631,9 @@ export const addHandover = (
   };
   handovers.unshift(newHandover);
   saveHandovers(handovers);
+  if (db) {
+    safeSetDoc(doc(db, 'handovers', newHandover.id), newHandover, { merge: true });
+  }
   
   // Log this handover in system AuditLogs
   addAuditLog(
@@ -647,6 +702,9 @@ export const addAuditLog = (
   };
   logs.unshift(newLog); // Prepend so it's top of list
   saveLogs(logs);
+  if (db) {
+    safeSetDoc(doc(db, 'auditLogs', newLog.id), newLog, { merge: true });
+  }
   return newLog;
 };
 
@@ -791,6 +849,9 @@ export const deleteReceptionist = (
 
   const filtered = users.filter((u) => u.id !== id);
   localStorage.setItem(USERS_KEY, JSON.stringify(filtered));
+  if (db) {
+    safeDeleteDoc(doc(db, 'users', id));
+  }
 
   addAuditLog(
     managerId,
@@ -845,6 +906,9 @@ export const createRoom = (
 
   rooms.push(newRoom);
   saveRooms(rooms);
+  if (db) {
+    safeSetDoc(doc(db, 'rooms', newRoom.id), newRoom, { merge: true });
+  }
 
   addAuditLog(
     managerId,
@@ -900,6 +964,9 @@ export const updateRoom = (
   };
 
   saveRooms(rooms);
+  if (db) {
+      safeUpdateDoc(doc(db, 'rooms', roomId), { status: status });
+    }
 
   addAuditLog(
     userId,
@@ -931,6 +998,9 @@ export const deleteRoom = (
 
   const filtered = rooms.filter((r) => r.id !== roomId);
   localStorage.setItem(ROOMS_KEY, JSON.stringify(filtered));
+  if (db) {
+    safeDeleteDoc(doc(db, 'rooms', roomId));
+  }
 
   addAuditLog(
     managerId,
@@ -967,6 +1037,11 @@ export const createBooking = (booking: Booking): { success: boolean; error?: str
   const bookings = getBookings();
   bookings.push(booking);
   saveBookings(bookings);
+
+  if (db) {
+    safeUpdateDoc(doc(db, 'rooms', room.id), { status: 'Occupied' });
+    safeSetDoc(doc(db, 'bookings', booking.id), booking, { merge: true });
+  }
 
   addAuditLog(
     booking.receptionistId,
@@ -1058,6 +1133,21 @@ export const checkoutBooking = (
     saveRooms(rooms);
   }
 
+  if (db) {
+    safeUpdateDoc(doc(db, 'bookings', bookingId), {
+      status: nextRoomStatus === 'Cleaning' ? 'CheckedOut' : 'CheckedOut',
+      paymentStatus: 'Paid',
+      totalPrice: bookings[bookingIndex].totalPrice,
+      lateCheckOutFee: (bookings[bookingIndex] as any).lateCheckOutFeeApplied || 0,
+      paymentMethod: checkoutPaymentMethod || 'Cash',
+      discountType: bookings[bookingIndex].discountType,
+      discountAmount: bookings[bookingIndex].discountAmount
+    });
+    if (roomIndex !== -1) {
+      safeUpdateDoc(doc(db, 'rooms', booking.roomId), { status: nextRoomStatus });
+    }
+  }
+
   addAuditLog(
     receptionistId,
     receptionistName,
@@ -1096,6 +1186,15 @@ export const cancelBooking = (
   if (roomIndex !== -1) {
     rooms[roomIndex].status = 'Available';
     saveRooms(rooms);
+  }
+
+  if (db) {
+    safeUpdateDoc(doc(db, 'bookings', bookingId), {
+      status: 'Cancelled'
+    });
+    if (roomIndex !== -1) {
+      safeUpdateDoc(doc(db, 'rooms', booking.roomId), { status: 'Available' });
+    }
   }
 
   addAuditLog(
@@ -1147,6 +1246,9 @@ export const updateBookingPayment = (
     }
   }
   saveBookings(bookings);
+  if (db) {
+    safeUpdateDoc(doc(db, 'bookings', bookingId), { paymentStatus: paymentStatus });
+  }
 
   addAuditLog(
     receptionistId,
@@ -1181,6 +1283,9 @@ export const updateRoomStatus = (
   const oldStatus = room.status;
   room.status = status;
   saveRooms(rooms);
+  if (db) {
+    safeUpdateDoc(doc(db, 'rooms', roomId), { status: status });
+  }
 
   addAuditLog(
     userId,

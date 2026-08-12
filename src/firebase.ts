@@ -16,7 +16,7 @@ if (!firebaseConfig.apiKey) {
 }
 
 const app = initializeApp(firebaseConfig);
-export const db = initializeFirestore(app, { localCache: memoryLocalCache() });
+export const db = initializeFirestore(app, { localCache: memoryLocalCache(), experimentalForceLongPolling: true });
 export const auth = getAuth(app);
 export const isFirebaseConfigured = !!firebaseConfig.projectId;
 
@@ -34,13 +34,10 @@ export const handleFirestoreError = (err: any, op: OperationType, path: string) 
 export const safeFirestoreOp = async <T>(
   op: () => Promise<T>,
   fallback: T,
-  timeoutMs: number = 10000
+  timeoutMs?: number // Deprecated, Firestore SDK handles its own connection states
 ): Promise<T> => {
   try {
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Firestore operation timed out")), timeoutMs)
-    );
-    return await Promise.race([op(), timeoutPromise]) as T;
+    return await op();
   } catch (error) {
     console.error("Firestore operation failed:", error);
     return fallback;

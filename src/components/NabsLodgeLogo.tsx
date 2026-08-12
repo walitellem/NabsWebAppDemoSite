@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { Building2 } from 'lucide-react';
 
 interface NabsLodgeLogoProps {
   className?: string;
@@ -10,24 +11,40 @@ interface NabsLodgeLogoProps {
 export const NabsLodgeLogo: React.FC<NabsLodgeLogoProps> = ({ 
   className = '', 
   size = 'md',
+  alt = 'Nabslodge Logo'
 }) => {
+  const [imageFailed, setImageFailed] = useState(false);
+
   const sizeMap = {
-    xs: 'w-8 h-8 text-sm',
-    sm: 'w-10 h-10 text-base',
-    md: 'w-11 h-11 text-lg',
-    lg: 'w-14 h-14 text-xl',
-    xl: 'w-20 h-20 text-2xl',
+    xs: 'h-8 w-8',
+    sm: 'h-10 w-10',
+    md: 'h-12 w-12',
+    lg: 'h-16 w-16',
+    xl: 'h-20 w-20',
   };
 
   const containerSize = sizeMap[size] || sizeMap.md;
 
+  if (imageFailed) {
+    return (
+      <div style={{ maxWidth: '100%', maxHeight: '100%', display: 'inline-block' }} className={`${containerSize} bg-emerald-700 text-white flex items-center justify-center rounded-lg shadow-sm shrink-0 font-bold border-2 border-emerald-800 ${className}`}>
+        <Building2 className="w-1/2 h-1/2" />
+      </div>
+    );
+  }
+
   return (
-    <div 
-      className={`shrink-0 rounded-xl bg-blue-600 flex items-center justify-center text-white font-extrabold shadow-lg shadow-blue-500/20 select-none ${containerSize} ${className}`}
-      title="NABS LODGE"
-    >
-      N
-    </div>
+    <img 
+      src="/logo.png" 
+      alt={alt} 
+      referrerPolicy="no-referrer"
+      onError={() => setImageFailed(true)}
+      style={{ maxWidth: '100%', maxHeight: '100%', display: 'inline-block' }} className={`${containerSize} object-contain shrink-0 border-2 border-zinc-300 rounded-lg ${className}`} 
+    />
   );
 };
+
+
+
+
 

@@ -38,50 +38,6 @@ export default function App() {
     const saved = localStorage.getItem('nabslodge_dark_mode');
     return saved === 'true';
   });
-  const [dbConnectionLost, setDbConnectionLost] = useState(false);
-
-  useEffect(() => {
-    const handleError = (event: ErrorEvent) => {
-      const msg = event.message || '';
-      const errorStr = event.error ? String(event.error) : '';
-      if (
-        msg.toLowerCase().includes('indexed database') || 
-        msg.toLowerCase().includes('indexeddb') || 
-        msg.toLowerCase().includes('database server lost') ||
-        errorStr.toLowerCase().includes('indexed database') ||
-        errorStr.toLowerCase().includes('indexeddb') ||
-        errorStr.toLowerCase().includes('database server lost')
-      ) {
-        console.warn("Caught IndexedDB / browser database connection loss:", event);
-        setDbConnectionLost(true);
-      }
-    };
-
-    const handleRejection = (event: PromiseRejectionEvent) => {
-      const reason = event.reason;
-      const msg = reason?.message || String(reason || '');
-      if (
-        msg.toLowerCase().includes('indexed database') || 
-        msg.toLowerCase().includes('indexeddb') || 
-        msg.toLowerCase().includes('database server lost') ||
-        (reason && String(reason).toLowerCase().includes('indexed database')) ||
-        (reason && String(reason).toLowerCase().includes('indexeddb')) ||
-        (reason && String(reason).toLowerCase().includes('database server lost'))
-      ) {
-        console.warn("Caught unhandled promise rejection of database connection loss:", event);
-        setDbConnectionLost(true);
-      }
-    };
-
-    window.addEventListener('error', handleError);
-    window.addEventListener('unhandledrejection', handleRejection);
-
-    return () => {
-      window.removeEventListener('error', handleError);
-      window.removeEventListener('unhandledrejection', handleRejection);
-    };
-  }, []);
-
   useEffect(() => {
     // Initialize the local mock database state on mount
     initializeDb();
@@ -250,61 +206,6 @@ export default function App() {
   const toggleTheme = () => {
     setIsDarkMode(prev => !prev);
   };
-
-  if (dbConnectionLost) {
-    return (
-      <div className={`min-h-screen w-full flex items-center justify-center p-6 ${
-        isDarkMode ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900'
-      }`}>
-        <div className={`w-full max-w-md p-6 rounded-xl border shadow-xl flex flex-col items-center text-center space-y-4 ${
-          isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
-        }`}>
-          <div className="p-3 bg-red-500/10 text-red-500 rounded-full">
-            <AlertCircle className="w-8 h-8 animate-pulse" />
-          </div>
-          
-          <div className="space-y-1.5">
-            <h2 className="text-lg font-bold">Local Database Connection Lost</h2>
-            <p className={`text-xs leading-relaxed ${isDarkMode ? 'text-zinc-400' : 'text-slate-600'}`}>
-              Your browser's connection to the local database server (IndexedDB) was interrupted. This typically occurs when browser tabs remain inactive in the background or in secure preview iframes.
-            </p>
-          </div>
-
-          <div className="w-full pt-2 flex flex-col gap-2">
-            <button
-              onClick={() => window.location.reload()}
-              className="w-full py-2 px-4 rounded-lg bg-amber-500 hover:bg-amber-600 text-amber-950 text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Refresh Application
-            </button>
-            <button
-              onClick={() => {
-                try {
-                  localStorage.clear();
-                  sessionStorage.clear();
-                  if (window.indexedDB) {
-                    const projId = import.meta.env.VITE_FIREBASE_PROJECT_ID || 'nabslodge';
-                    window.indexedDB.deleteDatabase(`firestore/[DEFAULT]/${projId}/main`);
-                    window.indexedDB.deleteDatabase('firestore');
-                  }
-                } catch (e) {
-                  console.error(e);
-                }
-                window.location.reload();
-              }}
-              className={`w-full py-2 px-4 rounded-lg border text-[11px] font-mono font-bold transition-all cursor-pointer ${
-                isDarkMode 
-                  ? 'border-slate-800 hover:bg-slate-800 text-zinc-400 hover:text-white' 
-                  : 'border-slate-200 hover:bg-slate-100 text-slate-500 hover:text-slate-900'
-              }`}
-            >
-              Reset Cache & Force Restart
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   if (!isAuthReady) {
     return (

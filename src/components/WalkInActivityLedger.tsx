@@ -380,6 +380,7 @@ export const WalkInActivityLedger: React.FC<WalkInActivityLedgerProps> = ({
               th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; font-size: 13px; }
               th { text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; color: #666; }
               .flex { display: flex; }
+              .flex-row { display: flex !important; flex-direction: row !important; align-items: center !important; gap: 16px !important; }
               .justify-between { justify-content: space-between; }
               .text-right { text-align: right; }
               .text-emerald-500 { color: #059669; }
@@ -834,15 +835,21 @@ export const WalkInActivityLedger: React.FC<WalkInActivityLedgerProps> = ({
               }`}
             >
               <div className="flex items-start justify-between pb-6 border-b border-zinc-200 dark:border-zinc-800">
-                <div className="flex items-center gap-3">
-                  <NabsLodgeLogo size="sm" />
-                  <div>
-                    <h2 className="text-lg font-black tracking-tight text-blue-600 dark:text-blue-400">NABS LODGE</h2>
+                <table style={{ border: 'none', marginBottom: '16px' }}>
+      <tbody>
+        <tr>
+          <td style={{ width: '48px', verticalAlign: 'middle', border: 'none', padding: '0 16px 0 0' }}>
+            <NabsLodgeLogo size="sm" />
+          </td>
+          <td style={{ verticalAlign: 'middle', border: 'none', padding: '0' }}>
+            <h2 className="text-lg font-black tracking-tight text-blue-600 dark:text-blue-400" style={{ margin: 0 }}>NABS LODGE</h2>
                     <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 mt-0.5">
                       Walk-In Activity Revenue Invoice & Receipt
                     </p>
-                  </div>
-                </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
                 <div className="text-right">
                   <span className="text-xs font-mono font-bold block text-amber-500">{generatedReceipt.serialNumber}</span>
                   <span className="text-[10px] text-zinc-400 block">{generatedReceipt.timestamp}</span>

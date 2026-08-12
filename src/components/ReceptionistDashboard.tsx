@@ -361,11 +361,16 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                   table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 10px !important; }
                   th, td { border: 1px solid #d1d5db; padding: 4px 6px !important; text-align: left; }
                   th { background-color: #f3f4f6; font-weight: 600; }
-                  .flex, .grid, [class*="flex-"], [class*="grid-"] {
-                    display: flex !important;
-                    flex-direction: column !important;
-                    gap: 4px !important;
-                  }
+                                     .grid, [class*="grid-"] {
+                     display: flex !important;
+                     flex-direction: column !important;
+                     gap: 4px !important;
+                   }
+                   .flex-row, .logo-header-row, [class*="flex-row"] {
+                     display: flex !important;
+                     flex-direction: row !important;
+                     align-items: center !important;
+                   }
                   .no-print, button, [data-html2canvas-ignore] { display: none !important; }
                 </style>
               </head>
@@ -453,6 +458,13 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
   const [otherBranchRooms, setOtherBranchRooms] = useState<Room[]>([]);
   const [showCrossBranch, setShowCrossBranch] = useState(false);
   const [bookings, setBookings] = useState<Booking[]>([]);
+
+  const dynamicRooms = useMemo(() => {
+    return rooms.map(r => {
+      const isOccupied = r.status === 'Occupied' || !!r.guestName || bookings.some(b => (b.roomId === r.id || String(b.roomNumber) === String(r.roomNumber)) && b.branch === branch && (b.status === 'CheckedIn' || b.status === 'checked_in'));
+      return { ...r, status: isOccupied ? 'Occupied' : r.status };
+    });
+  }, [rooms, bookings, branch]);
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
@@ -1014,11 +1026,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
             paymentStatus: 'Paid' as const,
             paidAmount: sale.totalPrice,
             unpaidAmount: 0,
-            settledPaymentMethod: bookingPaymentMethod,
-            timestamp: getFormattedDateTime(),
-            dateCreated: serverTimestamp(),
-            receptionistId: currentUser.id,
-            receptionistName: currentUser.name
+            settledPaymentMethod: bookingPaymentMethod
           };
           await setDoc(doc(db, 'drinkSales', sale.id), updatedSale, { merge: true });
         }
@@ -1029,10 +1037,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
               paymentStatus: 'Paid' as const, 
               paidAmount: s.totalPrice, 
               unpaidAmount: 0,
-              settledPaymentMethod: bookingPaymentMethod,
-              timestamp: getFormattedDateTime(),
-              receptionistId: currentUser.id,
-              receptionistName: currentUser.name
+              settledPaymentMethod: bookingPaymentMethod
             };
           }
           return s;
@@ -1640,38 +1645,31 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
     try {
       const roomsQ = query(collection(db, 'rooms'));
       unsubRooms = onSnapshot(roomsQ, (snapshot) => {
-        if (!snapshot.empty) {
-          const fetched = snapshot.docs.map((doc) => {
-            const data = doc.data() || {};
-            return {
-              id: doc.id,
-              roomNumber: String(data.roomNumber || ''),
-              roomType: String(data.roomType || 'Standard'),
-              price: typeof data.price === 'number' ? data.price : Number(data.price || 0),
-              status: (data.status || 'Available') as RoomStatus,
-              branch: (data.branch || 'Annex') as Branch,
-              amenities: Array.isArray(data.amenities) ? data.amenities : [],
-              description: String(data.description || ''),
-              maxGuests: typeof data.maxGuests === 'number' ? data.maxGuests : Number(data.maxGuests || 2),
-              normalBookingPrice: typeof data.normalBookingPrice === 'number' ? data.normalBookingPrice : (data.normalBookingPrice ? Number(data.normalBookingPrice) : undefined),
-              normalBookingMaxGuests: typeof data.normalBookingMaxGuests === 'number' ? data.normalBookingMaxGuests : (data.normalBookingMaxGuests ? Number(data.normalBookingMaxGuests) : undefined),
-              occasionBookingPrice: typeof data.occasionBookingPrice === 'number' ? data.occasionBookingPrice : (data.occasionBookingPrice ? Number(data.occasionBookingPrice) : undefined),
-              occasionBookingMaxGuests: typeof data.occasionBookingMaxGuests === 'number' ? data.occasionBookingMaxGuests : (data.occasionBookingMaxGuests ? Number(data.occasionBookingMaxGuests) : undefined),
-              monthlyPremiumPrice: typeof data.monthlyPremiumPrice === 'number' ? data.monthlyPremiumPrice : (data.monthlyPremiumPrice ? Number(data.monthlyPremiumPrice) : undefined)
-            } as Room;
-          });
-          setRooms(fetched.filter(r => r.branch === branch));
-          setOtherBranchRooms(fetched.filter(r => r.branch !== branch));
-          try {
-            saveRooms(fetched);
-          } catch (err) {
-            console.warn("Local storage rooms merge error:", err);
-          }
-        } else {
-          // Fall back to local branch rooms if Firestore collection has no documents
-          const allRooms = getRooms();
-          setRooms(allRooms.filter(r => r.branch === branch));
-          setOtherBranchRooms(allRooms.filter(r => r.branch !== branch));
+        const fetched = snapshot.docs.map((doc) => {
+          const data = doc.data() || {};
+          return {
+            id: doc.id,
+            roomNumber: String(data.roomNumber || ''),
+            roomType: String(data.roomType || 'Standard'),
+            price: typeof data.price === 'number' ? data.price : Number(data.price || 0),
+            status: (data.status || 'Available') as RoomStatus,
+            branch: (data.branch || 'Annex') as Branch,
+            amenities: Array.isArray(data.amenities) ? data.amenities : [],
+            description: String(data.description || ''),
+            maxGuests: typeof data.maxGuests === 'number' ? data.maxGuests : Number(data.maxGuests || 2),
+            normalBookingPrice: typeof data.normalBookingPrice === 'number' ? data.normalBookingPrice : (data.normalBookingPrice ? Number(data.normalBookingPrice) : undefined),
+            normalBookingMaxGuests: typeof data.normalBookingMaxGuests === 'number' ? data.normalBookingMaxGuests : (data.normalBookingMaxGuests ? Number(data.normalBookingMaxGuests) : undefined),
+            occasionBookingPrice: typeof data.occasionBookingPrice === 'number' ? data.occasionBookingPrice : (data.occasionBookingPrice ? Number(data.occasionBookingPrice) : undefined),
+            occasionBookingMaxGuests: typeof data.occasionBookingMaxGuests === 'number' ? data.occasionBookingMaxGuests : (data.occasionBookingMaxGuests ? Number(data.occasionBookingMaxGuests) : undefined),
+            monthlyPremiumPrice: typeof data.monthlyPremiumPrice === 'number' ? data.monthlyPremiumPrice : (data.monthlyPremiumPrice ? Number(data.monthlyPremiumPrice) : undefined)
+          } as Room;
+        });
+        setRooms(fetched.filter(r => r.branch === branch));
+        setOtherBranchRooms(fetched.filter(r => r.branch !== branch));
+        try {
+          saveRooms(fetched);
+        } catch (err) {
+          console.warn("Local storage rooms merge error:", err);
         }
         setIsLoadingData(false);
       }, (err) => {
@@ -1698,10 +1696,8 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
 
       const logsQ = query(collection(db, 'auditLogs'), where('branch', '==', branch));
       unsubLogs = onSnapshot(logsQ, (snapshot) => {
-        if (!snapshot.empty) {
-          const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AuditLog));
-          setLogs(fetched);
-        }
+        const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AuditLog));
+        setLogs(fetched);
       }, (err) => {
         console.warn("Firestore logs snapshot listener error:", err);
       });
@@ -1711,10 +1707,8 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
         snapshot.forEach((doc) => {
           catalogData.push({ id: doc.id, ...doc.data() });
         });
-        if (catalogData.length > 0) {
-          setActivityCatalog(catalogData);
-          saveActivityCatalog(catalogData);
-        }
+        setActivityCatalog(catalogData);
+        saveActivityCatalog(catalogData);
       }, (err) => {
         console.warn("Firestore activity catalog snapshot listener error:", err);
       });
@@ -1756,10 +1750,8 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
         snapshot.forEach(docSnap => {
           fetched.push({ id: docSnap.id, ...docSnap.data() } as DrinkItem);
         });
-        if (fetched.length > 0) {
-          setDrinks(fetched);
-          saveDrinks(fetched);
-        }
+        setDrinks(fetched);
+        saveDrinks(fetched);
       }, (err) => {
         console.warn("Firestore drinks snapshot error:", err);
       });
@@ -3296,8 +3288,9 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
         saveBookings(updatedLocalBookings);
         
         const localRooms = getRooms();
-        const updatedLocalRooms = localRooms.map(r => r.id === arrivalBooking.roomId ? { ...r, status: 'Occupied' as RoomStatus } : r);
+        const updatedLocalRooms = localRooms.map(r => (r.id === targetRoomId || String(r.roomNumber) === String(arrivalBooking.roomNumber)) ? { ...r, status: 'Occupied' as RoomStatus } : r);
         saveRooms(updatedLocalRooms);
+        updateRoomStatus(currentUser.id, currentUser.name, currentUser.role, targetRoomId, 'Occupied');
       } catch (err) {
         console.warn("Failed to update local storage for arrival check-in:", err);
       }
@@ -3653,11 +3646,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
               paymentStatus: 'Paid' as const,
               paidAmount: sale.totalPrice,
               unpaidAmount: 0,
-              settledPaymentMethod: checkoutPaymentMethod,
-              timestamp: checkoutDateStr,
-              dateCreated: serverTimestamp(),
-              receptionistId: currentUser.id,
-              receptionistName: currentUser.name
+              settledPaymentMethod: checkoutPaymentMethod
             };
             await setDoc(doc(db, 'drinkSales', sale.id), updatedSale, { merge: true });
           }
@@ -3668,10 +3657,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                 paymentStatus: 'Paid' as const, 
                 paidAmount: s.totalPrice, 
                 unpaidAmount: 0, 
-                settledPaymentMethod: checkoutPaymentMethod,
-                timestamp: checkoutDateStr,
-                receptionistId: currentUser.id,
-                receptionistName: currentUser.name
+                settledPaymentMethod: checkoutPaymentMethod
               };
             }
             return s;
@@ -3875,12 +3861,22 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
     }
   };
 
+  const getRoomEffectiveStatus = (room: Room): RoomStatus => {
+    const activeBooking = bookings.find(b => 
+      (b.roomId === room.id || (b.roomNumber && String(b.roomNumber) === String(room.roomNumber))) && 
+      b.status === 'CheckedIn' && 
+      (b.branch === room.branch || !b.branch || b.branch === branch)
+    );
+    if (activeBooking) return 'Occupied';
+    return room.status;
+  };
+
   // Count metrics for header stats
   const totalRoomsCount = rooms.length;
-  const occupiedCount = rooms.filter(r => r.status === 'Occupied').length;
-  const availableCount = rooms.filter(r => r.status === 'Available').length;
-  const maintenanceCount = rooms.filter(r => r.status === 'Maintenance').length;
-  const cleaningCount = rooms.filter(r => r.status === 'Cleaning').length;
+  const occupiedCount = rooms.filter(r => getRoomEffectiveStatus(r) === 'Occupied').length;
+  const availableCount = rooms.filter(r => getRoomEffectiveStatus(r) === 'Available').length;
+  const maintenanceCount = rooms.filter(r => getRoomEffectiveStatus(r) === 'Maintenance').length;
+  const cleaningCount = rooms.filter(r => getRoomEffectiveStatus(r) === 'Cleaning').length;
 
   // Get active bookings that are due for checkout within 2 hours (or overdue)
   const getDueSoonBookings = () => {
@@ -4418,14 +4414,12 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm shadow-sm bg-blue-600 text-white">
-                R
-              </div>
+            <div className="flex flex-row items-center gap-2">
+              <NabsLodgeLogo size="xs" />
               <h1 className="font-bold tracking-tight text-sm text-zinc-900 dark:text-zinc-50">{branch}</h1>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-row items-center gap-2">
             <button onClick={onOpenTutorial} title="Onboarding Guide" className="p-1.5 rounded-lg border flex items-center justify-center transition-all cursor-pointer bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 text-blue-600 dark:text-blue-400 hover:bg-zinc-50 dark:hover:bg-zinc-800">
               <HelpCircle className="w-4 h-4" />
             </button>
@@ -4835,10 +4829,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           {activeTab === 'rooms' && (
             <motion.div
               key="rooms"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2, ease: 'easeInOut' }}
               className="space-y-6 flex-1 w-full"
             >
               {/* Controls: search and room-status filters */}
@@ -4893,7 +4887,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                         }`}
                       >
                         <Globe className="w-3 h-3 text-purple-500" />
-                        {branch === 'Annex' ? 'Ayigya' : 'Annex'} Available ({otherBranchRooms.filter(r => r.status === 'Available').length})
+                        {branch === 'Annex' ? 'Ayigya' : 'Annex'} Available ({otherBranchRooms.filter(r => getRoomEffectiveStatus(r) === 'Available').length})
                       </button>
                       <div className={`w-px h-6 my-auto ${isDarkMode ? 'bg-zinc-800' : 'bg-slate-200'}`}></div>
                       <button
@@ -4965,7 +4959,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                       <Building2 className="w-5 h-5" />
                     </div>
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-row items-center gap-2">
                         <span className="text-xs font-bold font-mono uppercase tracking-wider">
                           {showCrossBranch 
                             ? `📍 Live View: Available Rooms at ${branch === 'Annex' ? 'Ayigya' : 'Annex'} Branch`
@@ -4973,11 +4967,11 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                           }
                         </span>
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          otherBranchRooms.filter(r => r.status === 'Available').length > 0 
+                          otherBranchRooms.filter(r => getRoomEffectiveStatus(r) === 'Available').length > 0 
                             ? 'bg-emerald-500/20 text-emerald-500 dark:text-emerald-400 border border-emerald-500/30' 
                             : 'bg-zinc-500/20 text-zinc-500 dark:text-zinc-400'
                         }`}>
-                          {otherBranchRooms.filter(r => r.status === 'Available').length} Available
+                          {otherBranchRooms.filter(r => getRoomEffectiveStatus(r) === 'Available').length} Available
                         </span>
                       </div>
                       <p className={`text-[11px] mt-0.5 ${isDarkMode ? 'text-zinc-400' : 'text-slate-500'}`}>
@@ -5052,7 +5046,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                               <td className="p-4 text-right"><div className="h-8 w-24 bg-zinc-250 dark:bg-zinc-800 rounded-lg ml-auto"></div></td>
                             </tr>
                           ))
-                        ) : (showCrossBranch ? otherBranchRooms.filter(r => r.status === 'Available') : rooms.filter(r => roomStatusFilter === 'All' || r.status === roomStatusFilter))
+                        ) : (showCrossBranch ? otherBranchRooms.filter(r => getRoomEffectiveStatus(r) === 'Available') : rooms.filter(r => roomStatusFilter === 'All' || getRoomEffectiveStatus(r) === roomStatusFilter))
                           .filter(r => {
                             const query = searchQuery.toLowerCase().trim();
                             return (
@@ -5067,9 +5061,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                               b.status === 'CheckedIn' && 
                               (b.branch === room.branch || !b.branch || b.branch === branch)
                             ) || null;
-                            const isOccupied = room.status === 'Occupied' || !!activeBooking;
-                            const isMaintenance = room.status === 'Maintenance' && !activeBooking;
-                            const isCleaning = room.status === 'Cleaning' && !activeBooking;
+                            const effectiveStatus = getRoomEffectiveStatus(room);
+                            const isOccupied = effectiveStatus === 'Occupied';
+                            const isMaintenance = effectiveStatus === 'Maintenance';
+                            const isCleaning = effectiveStatus === 'Cleaning';
                             
                             let radarClasses = "";
                             let radarBadge = null;
@@ -5113,8 +5108,8 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                                 </td>
                                 <td className="p-4 font-mono">{room.maxGuests || 2} guests</td>
                                 <td className="p-4">
-                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase border ${getRoomStatusClasses(room.status, isDarkMode)}`}>
-                                    {room.status}
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase border ${getRoomStatusClasses(effectiveStatus, isDarkMode)}`}>
+                                    {effectiveStatus}
                                   </span>
                                 </td>
                                 <td className="p-4">
@@ -5137,7 +5132,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                                       </span>
                                     ) : (
                                       <>
-                                        {room.status === 'Available' && (
+                                        {effectiveStatus === 'Available' && (
                                           <button
                                             onClick={() => handleOpenBooking(room)}
                                             className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg text-[10px] cursor-pointer"
@@ -5145,7 +5140,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                                             Book
                                           </button>
                                         )}
-                                        {room.status === 'Occupied' && (
+                                        {effectiveStatus === 'Occupied' && (
                                           <div className="flex gap-1.5 justify-end">
                                             <button
                                               onClick={() => {
@@ -5198,7 +5193,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                       </div>
                     ))
                   ) : (
-                    (showCrossBranch ? otherBranchRooms.filter(r => r.status === 'Available') : rooms.filter(r => roomStatusFilter === 'All' || r.status === roomStatusFilter))
+                    (showCrossBranch ? otherBranchRooms.filter(r => getRoomEffectiveStatus(r) === 'Available') : rooms.filter(r => roomStatusFilter === 'All' || getRoomEffectiveStatus(r) === roomStatusFilter))
                     .filter(r => {
                       const query = searchQuery.toLowerCase().trim();
                       return (
@@ -5213,9 +5208,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                         b.status === 'CheckedIn' && 
                         (b.branch === room.branch || !b.branch || b.branch === branch)
                       ) || null;
-                      const isOccupied = room.status === 'Occupied' || !!activeBooking;
-                      const isMaintenance = room.status === 'Maintenance' && !activeBooking;
-                      const isCleaning = room.status === 'Cleaning' && !activeBooking;
+                      const effectiveStatus = getRoomEffectiveStatus(room);
+                      const isOccupied = effectiveStatus === 'Occupied';
+                      const isMaintenance = effectiveStatus === 'Maintenance';
+                      const isCleaning = effectiveStatus === 'Cleaning';
 
                       let radarBorder = isOccupied ? 'border-blue-500/20' : isMaintenance ? 'border-red-500/20' : isCleaning ? 'border-amber-500/20' : '';
                       if (isOccupied && activeBooking) {
@@ -5246,8 +5242,8 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                               <span className={`text-2xl font-black font-mono ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{room.roomNumber}</span>
                             </div>
 
-                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold font-mono border uppercase tracking-wider ${getRoomStatusClasses(room.status, isDarkMode)}`}>
-                              {room.status}
+                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold font-mono border uppercase tracking-wider ${getRoomStatusClasses(effectiveStatus, isDarkMode)}`}>
+                              {effectiveStatus}
                             </span>
                           </div>
 
@@ -5379,7 +5375,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                               </div>
                             ) : (
                               <>
-                                {room.status === 'Available' && (
+                                {effectiveStatus === 'Available' && (
                                   <div className="space-y-2">
                                     <button
                                       onClick={() => handleOpenBooking(room)}
@@ -5412,7 +5408,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                                   </div>
                                 )}
 
-                                {room.status === 'Occupied' && (
+                                {effectiveStatus === 'Occupied' && (
                                   <div className="grid grid-cols-2 gap-2">
                                     <button
                                       onClick={() => {
@@ -5443,7 +5439,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                                   </div>
                                 )}
 
-                                {room.status === 'Cleaning' && (
+                                {effectiveStatus === 'Cleaning' && (
                                   <div className="grid grid-cols-2 gap-2">
                                     <button
                                       onClick={() => handleUpdateRoomStatus(room, 'Available')}
@@ -5464,7 +5460,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                                   </div>
                                 )}
 
-                                {room.status === 'Maintenance' && (
+                                {effectiveStatus === 'Maintenance' && (
                                   <div className="grid grid-cols-2 gap-2">
                                     <button
                                       onClick={() => handleUpdateRoomStatus(room, 'Available')}
@@ -5508,10 +5504,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           {activeTab === 'quickCalendar' && (
             <motion.div
               key="quickCalendar"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2, ease: 'easeInOut' }}
               className="space-y-6 flex-1 w-full max-w-7xl mx-auto"
             >
               <QuickAvailabilityCalendar
@@ -5525,10 +5521,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           {activeTab === 'reservations' && (
             <motion.div
               key="reservations"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2, ease: 'easeInOut' }}
               className={`border rounded-3xl p-6 space-y-6 transition-colors ${
                 theme.card
               }`}
@@ -5566,7 +5562,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                         ))
                       }
                     </select>
-                    {rooms.filter(r => r.status === 'Available').length === 0 && (
+                    {rooms.filter(r => getRoomEffectiveStatus(r) === 'Available').length === 0 && (
                       <p className="text-[10px] text-red-500 mt-1 font-semibold">⚠ No rooms are currently available for booking at this branch.</p>
                     )}
                   </div>
@@ -6050,10 +6046,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           {activeTab === 'history' && (
             <motion.div
               key="history"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2, ease: 'easeInOut' }}
               className={`border rounded-3xl p-6 space-y-6 transition-colors ${
                 theme.card
               }`}
@@ -6345,10 +6341,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           {activeTab === 'activityLedger' && (
             <motion.div
               key="activityLedger"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2, ease: 'easeInOut' }}
               className="space-y-6 flex-1 w-full"
             >
               <WalkInActivityLedger 
@@ -6380,10 +6376,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           {activeTab === 'drinks' && (
             <motion.div
               key="drinks"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2, ease: 'easeInOut' }}
               className="space-y-6 flex-1 w-full"
             >
               {/* Header and top buttons */}
@@ -6634,7 +6630,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           {/* Active Shift Guidelines */}
           <div className={`p-6 rounded-xl w-full h-full flex flex-col justify-between gap-6 transition-colors ${theme.card}`}>
             <div className="space-y-4">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-row items-center gap-2">
                 <Shield className={`w-4 h-4 ${isDarkMode ? 'text-blue-400' : 'text-blue-500'}`} />
                 <h3 className={`text-xs font-mono uppercase tracking-widest ${theme.text}`}>Shift Protocol</h3>
               </div>
@@ -7250,9 +7246,17 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                       isDarkMode ? 'bg-black border-zinc-850 text-zinc-100' : 'bg-white border-slate-300 text-slate-850'
                     }`}
                   >
-                    <div className="text-center border-b pb-3 border-dashed border-zinc-800/20 dark:border-zinc-800">
-                      <h4 className="text-xs font-black uppercase tracking-wider">NABSLODGE</h4>
-                      <p className="text-[10px] text-zinc-500 font-mono mt-0.5">Official Guest Invoice & Checkout Folio</p>
+                    <div className="flex items-center justify-between border-b pb-3 border-dashed border-zinc-800/20 dark:border-zinc-800">
+                      <div className="flex flex-row items-center gap-2">
+                        <NabsLodgeLogo size="sm" />
+                        <div>
+                          <h4 className="text-xs font-black uppercase tracking-wider">NABSLODGE</h4>
+                          <p className="text-[10px] text-zinc-500 font-mono mt-0.5">Official Guest Invoice & Checkout Folio</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[10px] text-zinc-400 font-mono block">Room {selectedBooking.roomNumber}</span>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
@@ -8445,9 +8449,9 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                   body * {
                     display: none !important;
                   }
-                  .printable-invoice-modal, .printable-invoice-modal * {
-                    display: block !important;
-                  }
+                  .printable-invoice-modal {
+                     display: block !important;
+                   }
                   .printable-invoice-modal {
                     position: absolute !important;
                     left: 0 !important;
@@ -8489,18 +8493,22 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                     display: table-cell !important;
                     padding: 4px !important;
                   }
-                  .printable-invoice-modal .flex, 
                   .printable-invoice-modal .grid {
                     display: flex !important;
                     flex-direction: column !important;
                     gap: 4px !important;
                   }
-                  .printable-invoice-modal .flex-row, 
-                  .printable-invoice-modal .grid-cols-2 {
-                    display: flex !important;
-                    flex-direction: column !important;
-                    gap: 2px !important;
-                  }
+                  .printable-invoice-modal .flex-row {
+                     display: flex !important;
+                     flex-direction: row !important;
+                     gap: 12px !important;
+                     align-items: center !important;
+                   }
+                   .printable-invoice-modal .grid-cols-2 {
+                     display: flex !important;
+                     flex-direction: column !important;
+                     gap: 2px !important;
+                   }
                   .no-print, button, .no-print *, [data-html2canvas-ignore] {
                     display: none !important;
                   }
@@ -8682,19 +8690,25 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                         
                         {/* Letterhead Logo / Branding Header */}
                         {invoicePrintShowBranding && (
-                          <div className="flex flex-col sm:flex-row justify-between items-start gap-4 pb-6 border-b border-zinc-200 print:flex-col print:gap-1 print:pb-2 print:border-b-dashed print:border-zinc-300">
-                            <div className="flex items-center gap-3">
-                              <NabsLodgeLogo size="lg" />
-                              <div>
-                                <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 print:text-base">NABS LODGE</h1>
+                          <div className="flex flex-col sm:flex-row justify-between items-start gap-4 pb-6 border-b border-zinc-200 print:flex-row print:items-center print:gap-4 print:pb-2 print:border-b-dashed print:border-zinc-300">
+                            <table style={{ width: '100%', marginBottom: '16px', border: 'none', tableLayout: 'fixed' }} className="logo-header-row">
+      <tbody>
+        <tr>
+          <td style={{ width: '64px', verticalAlign: 'middle', border: 'none', padding: '0 16px 0 0' }}>
+            <NabsLodgeLogo size="lg" />
+          </td>
+          <td style={{ verticalAlign: 'middle', border: 'none', padding: '0' }}>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 print:text-base" style={{ margin: 0 }}>NABS LODGE</h1>
                                 <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest print:text-[10px] print:tracking-normal print:mt-0">
                                   Nabslodge {branch}
                                 </p>
                                 <p className="text-[10px] text-zinc-400 font-mono mt-0.5 print:text-[8px] print:mt-0">
                                   Official {invoiceType === 'CheckIn' ? 'Check-In Booking' : 'Check-Out Settlement'} {documentLabel}
                                 </p>
-                              </div>
-                            </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
                             <div className="text-left sm:text-right font-mono text-xs space-y-1 print:text-[10px] print:space-y-0.5 print:text-left">
                               <div><span className="text-zinc-500">{documentLabel} No:</span> <strong className="font-bold">{invoiceNum}</strong></div>
                               <div><span className="text-zinc-500">Date of Issue:</span> <span>{dateOfIssue}</span></div>
@@ -9228,7 +9242,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                     className={`block w-full px-3.5 py-2.5 rounded-xl text-xs focus:outline-none transition-colors ${theme.input}`}
                   >
                     <option value="" disabled>Select an available room</option>
-                    {rooms.filter(r => r.status === 'Available').map(r => (
+                    {dynamicRooms.filter(r => r.status === 'Available').map(r => (
                       <option key={r.id} value={r.id}>Room {r.roomNumber} - {r.roomType} (GH₵{r.price}/night)</option>
                     ))}
                   </select>
@@ -10196,12 +10210,21 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
               }`}
             >
               <div className="flex items-start justify-between pb-6 border-b border-zinc-200 dark:border-zinc-800">
-                <div>
-                  <h2 className="text-xl font-black tracking-tight text-blue-600 dark:text-blue-400">NABSLODGE</h2>
-                  <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 mt-0.5">
-                    Walk-In Activity Revenue Invoice & Receipt
-                  </p>
-                </div>
+                <table style={{ width: '100%', marginBottom: '16px', border: 'none', tableLayout: 'fixed' }} className="logo-header-row">
+      <tbody>
+        <tr>
+          <td style={{ width: '48px', verticalAlign: 'middle', border: 'none', padding: '0 16px 0 0' }}>
+            <NabsLodgeLogo size="sm" />
+          </td>
+          <td style={{ verticalAlign: 'middle', border: 'none', padding: '0' }}>
+            <h2 className="text-xl font-black tracking-tight text-blue-600 dark:text-blue-400" style={{ margin: 0 }}>NABSLODGE</h2>
+                    <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 mt-0.5">
+                      Walk-In Activity Revenue Invoice & Receipt
+                    </p>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
                 <div className="text-right">
                   <span className="text-xs font-mono font-bold block text-amber-500">
                     {walkInReceiptData.serialNumber || 'ACT-2026'}
@@ -10481,7 +10504,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                       className={`block w-full px-3.5 py-2.5 rounded-xl text-xs font-medium focus:outline-none transition-colors border ${theme.input}`}
                     >
                       <option value="">-- Non-Resident / Walk-In --</option>
-                      {rooms.filter(r => r.status === 'Occupied' || r.guestName).map(r => (
+                      {dynamicRooms.filter(r => r.status === 'Occupied' || r.guestName).map(r => (
                         <option key={r.roomNumber} value={r.roomNumber}>
                           Room {r.roomNumber} ({r.guestName || 'Occupied'})
                         </option>
@@ -10822,7 +10845,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                     className={`w-full px-3 py-2 rounded-xl border text-xs outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500/30 transition-all ${theme.input}`}
                   >
                     <option value="">-- Non-Resident / Walk-In --</option>
-                    {rooms.filter(r => r.status === 'Occupied').map(r => (
+                    {dynamicRooms.filter(r => r.status === 'Occupied').map(r => (
                       <option key={r.roomNumber} value={r.roomNumber}>
                         Room {r.roomNumber} ({r.guestName})
                       </option>
