@@ -23,6 +23,7 @@ export interface User {
   ip?: string;
   status?: UserStatus;
   lastShiftReset?: number;
+  tutorialSeen?: boolean;
 }
 
 export interface StaffUpdateInput {
@@ -44,6 +45,7 @@ export interface Room {
   amenities: string[];
   description?: string;
   maxGuests?: number;
+  guestName?: string;
   normalBookingPrice?: number;
   normalBookingMaxGuests?: number;
   occasionBookingPrice?: number;
@@ -173,6 +175,8 @@ export interface DrinkSale {
   lodgeBranch?: string;
   timestamp: string;
   dateCreated?: any;
+  status?: string;
+  note?: string;
 }
 
 export interface HandoverItemBreakdown {

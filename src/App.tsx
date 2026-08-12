@@ -125,7 +125,8 @@ export default function App() {
                     branch: finalRole === 'Manager' ? undefined : (docData?.branch || docData?.Branch || localMatch?.branch || 'Annex'),
                     status: rawStatus,
                     createdAt: docData?.createdAt || localMatch?.createdAt || new Date().toISOString(),
-                    lastShiftReset: docData?.lastShiftReset || localMatch?.lastShiftReset
+                    lastShiftReset: docData?.lastShiftReset || localMatch?.lastShiftReset,
+                    tutorialSeen: docData?.tutorialSeen ?? localMatch?.tutorialSeen ?? false
                   };
 
                   setCurrentUser(userProfile);
@@ -171,12 +172,17 @@ export default function App() {
 
   useEffect(() => {
     if (currentUser) {
-      const seen = localStorage.getItem(`nabslodge_tutorial_seen_${currentUser.id}`);
-      if (!seen) {
+      const idKey = currentUser.id ? localStorage.getItem(`nabslodge_tutorial_seen_${currentUser.id}`) : null;
+      const emailKey = currentUser.email ? localStorage.getItem(`nabslodge_tutorial_seen_${currentUser.email.toLowerCase().trim()}`) : null;
+      const docSeen = currentUser.tutorialSeen;
+
+      if (idKey === 'true' || emailKey === 'true' || docSeen) {
+        setIsTutorialOpen(false);
+      } else {
         setIsTutorialOpen(true);
       }
     }
-  }, [currentUser?.id]);
+  }, [currentUser?.id, currentUser?.email, currentUser?.tutorialSeen]);
 
   useEffect(() => {
     localStorage.setItem('nabslodge_dark_mode', String(isDarkMode));

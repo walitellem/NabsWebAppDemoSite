@@ -154,6 +154,32 @@
         "rejectionReason": { "type": "string" }
       },
       "required": ["id", "bookingId", "branch", "receptionistId", "status", "proposedTotalPrice"]
+    },
+    "MonthlySnapshot": {
+      "title": "MonthlySnapshot",
+      "description": "Archived monthly revenue breakdown",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "month": { "type": "string" },
+        "year": { "type": "number" },
+        "data": { "type": "object" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "month", "year", "data", "createdAt"]
+    },
+    "MonthlySnapshotNotification": {
+      "title": "MonthlySnapshotNotification",
+      "description": "Notification for archived monthly reports",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "snapshotId": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "snapshotId", "message", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -192,6 +218,14 @@
     "/pendingEditRequests/{requestId}": {
       "schema": "PendingEditRequest",
       "description": "Pending requests to edit bookings with financial impact"
+    },
+    "/monthlySnapshots/{snapshotId}": {
+      "schema": "MonthlySnapshot",
+      "description": "Archived monthly reports"
+    },
+    "/monthlySnapshotNotifications/{notificationId}": {
+      "schema": "MonthlySnapshotNotification",
+      "description": "Notifications for archived reports"
     }
   }
 }

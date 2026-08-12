@@ -28,7 +28,9 @@ export const NabsLodgeLogo: React.FC<NabsLodgeLogoProps> = ({
   if (imageFailed) {
     return (
       <div style={{ maxWidth: '100%', maxHeight: '100%', display: 'inline-block' }} className={`${containerSize} bg-emerald-700 text-white flex items-center justify-center rounded-lg shadow-sm shrink-0 font-bold border-2 border-emerald-800 ${className}`}>
-        <Building2 className="w-1/2 h-1/2" />
+        <div className="p-1 border-2 border-emerald-950 rounded-md flex items-center justify-center">
+          <Building2 className="w-6 h-6" />
+        </div>
       </div>
     );
   }

@@ -18,6 +18,8 @@ import {
   KeyRound
 } from 'lucide-react';
 import { User } from '../types';
+import { db, isFirebaseConfigured, safeSetDoc } from '../firebase';
+import { doc } from 'firebase/firestore';
 
 interface GettingStartedModalProps {
   isOpen: boolean;
@@ -178,9 +180,45 @@ export default function GettingStartedModal({ isOpen, onClose, currentUser, isDa
     setCurrentStep(0);
   };
 
+  const persistTutorialSeen = () => {
+    if (currentUser?.id) {
+      localStorage.setItem(`nabslodge_tutorial_seen_${currentUser.id}`, 'true');
+    }
+    if (currentUser?.email) {
+      localStorage.setItem(`nabslodge_tutorial_seen_${currentUser.email.toLowerCase().trim()}`, 'true');
+    }
+    if (isFirebaseConfigured && db && currentUser?.id) {
+      safeSetDoc(doc(db, 'users', currentUser.id), { tutorialSeen: true }, { merge: true }).catch(() => {});
+    }
+  };
+
+  const handleToggleDontShowAgain = (checked: boolean) => {
+    setDontShowAgain(checked);
+    if (checked) {
+      persistTutorialSeen();
+    } else {
+      if (currentUser?.id) {
+        localStorage.removeItem(`nabslodge_tutorial_seen_${currentUser.id}`);
+      }
+      if (currentUser?.email) {
+        localStorage.removeItem(`nabslodge_tutorial_seen_${currentUser.email.toLowerCase().trim()}`);
+      }
+      if (isFirebaseConfigured && db && currentUser?.id) {
+        safeSetDoc(doc(db, 'users', currentUser.id), { tutorialSeen: false }, { merge: true }).catch(() => {});
+      }
+    }
+  };
+
+  const handleClose = () => {
+    if (dontShowAgain) {
+      persistTutorialSeen();
+    }
+    onClose();
+  };
+
   const handleComplete = () => {
     if (dontShowAgain) {
-      localStorage.setItem(`nabslodge_tutorial_seen_${currentUser.id}`, 'true');
+      persistTutorialSeen();
     }
     onClose();
   };
@@ -202,7 +240,7 @@ export default function GettingStartedModal({ isOpen, onClose, currentUser, isDa
           {/* Header Banner */}
           <div className="relative p-6 pb-4 border-b border-zinc-200/50 dark:border-zinc-800/50">
             <button 
-              onClick={onClose}
+              onClick={handleClose}
               className={`absolute top-4 right-4 p-1.5 rounded-full transition-colors cursor-pointer ${
                 isDarkMode 
                   ? 'hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200' 
@@ -324,7 +362,7 @@ export default function GettingStartedModal({ isOpen, onClose, currentUser, isDa
                   <input
                     type="checkbox"
                     checked={dontShowAgain}
-                    onChange={(e) => setDontShowAgain(e.target.checked)}
+                    onChange={(e) => handleToggleDontShowAgain(e.target.checked)}
                     className="w-4 h-4 rounded-sm border-slate-300 dark:border-zinc-700 text-blue-600 bg-transparent focus:ring-0 focus:ring-offset-0 transition-colors"
                   />
                   <span className="text-xs text-slate-500 dark:text-zinc-400 group-hover:text-slate-800 dark:group-hover:text-zinc-200 selection:bg-transparent">

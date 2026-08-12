@@ -5554,7 +5554,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                     >
                       <option value="">-- Choose a room --</option>
                       {rooms
-                        .filter(r => r.status === 'Available')
+                        .filter(r => getRoomEffectiveStatus(r) === 'Available')
                         .map(r => (
                           <option key={r.id} value={r.id}>
                             Room {r.roomNumber} - {r.roomType} (GH₵{r.price}/night)
@@ -9242,7 +9242,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                     className={`block w-full px-3.5 py-2.5 rounded-xl text-xs focus:outline-none transition-colors ${theme.input}`}
                   >
                     <option value="" disabled>Select an available room</option>
-                    {dynamicRooms.filter(r => r.status === 'Available').map(r => (
+                    {dynamicRooms.filter(r => getRoomEffectiveStatus(r) === 'Available').map(r => (
                       <option key={r.id} value={r.id}>Room {r.roomNumber} - {r.roomType} (GH₵{r.price}/night)</option>
                     ))}
                   </select>

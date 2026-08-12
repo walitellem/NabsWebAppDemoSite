@@ -5,8 +5,10 @@ import {
   ArrowRight, ShieldCheck, Hotel, Calendar, Briefcase,
   Key, ClipboardList
 } from 'lucide-react';
-import { User, Room, PendingEditRequest } from '../types';
-import { getRooms } from '../data';
+import { User, Room, PendingEditRequest, Booking } from '../types';
+import { getRooms, getBookings } from '../data';
+import { db, isFirebaseConfigured, safeSetDoc } from '../firebase';
+import { collection, onSnapshot, doc } from 'firebase/firestore';
 
 interface WelcomeViewProps {
   currentUser: User;
@@ -28,24 +30,104 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
   const [pendingRequests, setPendingRequests] = useState(0);
 
   useEffect(() => {
-    if (currentUser.role === 'Manager') {
-      try {
-        const rooms = getRooms();
-        const main = rooms.filter(r => r.branch === 'Ayigya' && r.status === 'Available').map(r => r.roomNumber);
-        const annex = rooms.filter(r => r.branch === 'Annex' && r.status === 'Available').map(r => r.roomNumber);
-        setMainAvailableRooms(main);
-        setAnnexAvailableRooms(annex);
+    if (currentUser.role !== 'Manager') return;
 
-        const storedEdits = localStorage.getItem('nabslodge_pending_edits');
-        if (storedEdits) {
-          const edits: PendingEditRequest[] = JSON.parse(storedEdits);
-          const pending = edits.filter(e => e.status === 'Pending').length;
-          setPendingRequests(pending);
-        }
-      } catch (err) {
-        console.warn("Failed to load dashboard quick stats", err);
+    let currentRooms: Room[] = getRooms();
+    let currentBookings: Booking[] = getBookings();
+
+    const getRoomEffectiveStatus = (room: Room, bookingsList: Booking[]): string => {
+      const isOccupied = room.status === 'Occupied' || !!room.guestName || bookingsList.some(b => 
+        (b.roomId === room.id || (b.roomNumber && String(b.roomNumber) === String(room.roomNumber))) && 
+        (b.branch === room.branch || !b.branch) && 
+        (b.status === 'CheckedIn' || (b.status as string) === 'checked_in')
+      );
+      if (isOccupied) return 'Occupied';
+      return room.status || 'Available';
+    };
+
+    const updateAvailableRooms = (roomsList: Room[], bookingsList: Booking[]) => {
+      const main = roomsList
+        .filter(r => r.branch === 'Ayigya' && getRoomEffectiveStatus(r, bookingsList) === 'Available')
+        .map(r => r.roomNumber);
+      const annex = roomsList
+        .filter(r => r.branch === 'Annex' && getRoomEffectiveStatus(r, bookingsList) === 'Available')
+        .map(r => r.roomNumber);
+
+      setMainAvailableRooms(main);
+      setAnnexAvailableRooms(annex);
+
+      // Auto-heal: If any room document in Firestore is listed as Available but has an active CheckedIn booking, fix it
+      if (isFirebaseConfigured && db) {
+        roomsList.forEach(r => {
+          const hasActiveCheckedIn = bookingsList.some(b => 
+            (b.roomId === r.id || (b.roomNumber && String(b.roomNumber) === String(r.roomNumber))) && 
+            (b.branch === r.branch || !b.branch) && 
+            (b.status === 'CheckedIn' || (b.status as string) === 'checked_in')
+          );
+          if (hasActiveCheckedIn && r.status !== 'Occupied') {
+            safeSetDoc(doc(db, 'rooms', r.id), { status: 'Occupied' }, { merge: true }).catch(() => {});
+          }
+        });
       }
-    }
+    };
+
+    // Initial calculation from baseline data
+    updateAvailableRooms(currentRooms, currentBookings);
+
+    // Initial local pending edits fallback
+    try {
+      const storedEdits = localStorage.getItem('nabslodge_pending_edits');
+      if (storedEdits) {
+        const edits: PendingEditRequest[] = JSON.parse(storedEdits);
+        setPendingRequests(edits.filter(e => e.status === 'Pending').length);
+      }
+    } catch {}
+
+    if (!isFirebaseConfigured || !db) return;
+
+    // Real-time Firestore snapshot listeners
+    const unsubRooms = onSnapshot(collection(db, 'rooms'), (snapshot) => {
+      const roomsData: Room[] = [];
+      snapshot.forEach((d) => {
+        const data = d.data() || {};
+        roomsData.push({
+          id: d.id,
+          roomNumber: String(data.roomNumber || ''),
+          roomType: String(data.roomType || 'Standard'),
+          price: Number(data.price) || 0,
+          status: data.status || 'Available',
+          branch: data.branch || 'Annex',
+          amenities: data.amenities || [],
+          description: data.description || '',
+          maxGuests: data.maxGuests || 2
+        });
+      });
+      currentRooms = roomsData;
+      updateAvailableRooms(currentRooms, currentBookings);
+    }, (err) => console.warn("WelcomeView rooms subscription error:", err));
+
+    const unsubBookings = onSnapshot(collection(db, 'bookings'), (snapshot) => {
+      const bookingsData: Booking[] = [];
+      snapshot.forEach((d) => {
+        bookingsData.push({ id: d.id, ...d.data() } as Booking);
+      });
+      currentBookings = bookingsData;
+      updateAvailableRooms(currentRooms, currentBookings);
+    }, (err) => console.warn("WelcomeView bookings subscription error:", err));
+
+    const unsubEdits = onSnapshot(collection(db, 'pendingEditRequests'), (snapshot) => {
+      const editsData: PendingEditRequest[] = [];
+      snapshot.forEach((d) => {
+        editsData.push({ id: d.id, ...d.data() } as PendingEditRequest);
+      });
+      setPendingRequests(editsData.filter(e => e.status === 'Pending').length);
+    }, (err) => console.warn("WelcomeView pending edits subscription error:", err));
+
+    return () => {
+      unsubRooms();
+      unsubBookings();
+      unsubEdits();
+    };
   }, [currentUser]);
 
   const getGreeting = () => {
