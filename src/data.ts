@@ -1029,9 +1029,12 @@ export const createBooking = (booking: Booking): { success: boolean; error?: str
     return { success: false, error: 'Unauthorized: Room belongs to another branch.' };
   }
 
-  // Update room status to Occupied
-  rooms[roomIndex].status = 'Occupied';
-  saveRooms(rooms);
+  // Update room status to Occupied only if guest is actually CheckedIn
+  const isCheckedIn = booking.status === 'CheckedIn' || (booking.status as string) === 'checked_in';
+  if (isCheckedIn) {
+    rooms[roomIndex].status = 'Occupied';
+    saveRooms(rooms);
+  }
 
   // Add booking
   const bookings = getBookings();
@@ -1039,7 +1042,9 @@ export const createBooking = (booking: Booking): { success: boolean; error?: str
   saveBookings(bookings);
 
   if (db) {
-    safeUpdateDoc(doc(db, 'rooms', room.id), { status: 'Occupied' });
+    if (isCheckedIn) {
+      safeUpdateDoc(doc(db, 'rooms', room.id), { status: 'Occupied' });
+    }
     safeSetDoc(doc(db, 'bookings', booking.id), booking, { merge: true });
   }
 
@@ -1105,7 +1110,11 @@ export const checkoutBooking = (
   bookings[bookingIndex].actualCheckOutDate = getFormattedDateTime();
   const roomStayTotal = finalTotalPrice !== undefined ? finalTotalPrice : bookings[bookingIndex].totalPrice;
   const hasLateFee = Number(lateCheckOutFeeApplied || 0) > 0;
-  const priorPaid = Number(bookings[bookingIndex].amountPaid || bookings[bookingIndex].deposit || 0);
+  const priorPaid = Number(bookings[bookingIndex].priorAmountPaid || bookings[bookingIndex].amountPaid || bookings[bookingIndex].deposit || 0);
+
+  if (!bookings[bookingIndex].priorAmountPaid && priorPaid > 0) {
+    bookings[bookingIndex].priorAmountPaid = priorPaid;
+  }
 
   bookings[bookingIndex].totalPrice = roomStayTotal;
   bookings[bookingIndex].paymentStatus = 'Paid';

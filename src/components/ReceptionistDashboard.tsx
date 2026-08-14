@@ -170,14 +170,14 @@ function cleanPdfText(text: string | number | undefined | null): string {
 const isCashMethod = (method?: string) => {
   if (!method) return true;
   const m = method.toLowerCase();
-  if (m.includes('unpaid')) return false;
+  if (m.includes('unpaid') || m.includes('split')) return false;
   return m.includes('cash') || (!m.includes('mobile') && !m.includes('momo') && !m.includes('bank') && !m.includes('pos'));
 };
 
 const isMomoMethod = (method?: string) => {
   if (!method) return false;
   const m = method.toLowerCase();
-  if (m.includes('unpaid')) return false;
+  if (m.includes('unpaid') || m.includes('split')) return false;
   return m.includes('mobile') || m.includes('momo') || m.includes('bank') || m.includes('pos') || m.includes('transfer');
 };
 
@@ -461,10 +461,34 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
 
   const dynamicRooms = useMemo(() => {
     return rooms.map(r => {
-      const isOccupied = r.status === 'Occupied' || !!r.guestName || bookings.some(b => (b.roomId === r.id || String(b.roomNumber) === String(r.roomNumber)) && b.branch === branch && (b.status === 'CheckedIn' || b.status === 'checked_in'));
-      return { ...r, status: isOccupied ? 'Occupied' : r.status };
+      const activeBooking = bookings.find(b => 
+        (b.roomId === r.id || (b.roomNumber && String(b.roomNumber) === String(r.roomNumber))) && 
+        (b.status === 'CheckedIn' || b.status === 'checked_in') && 
+        (b.branch === r.branch || !b.branch || b.branch === branch)
+      );
+      const isOccupied = !!activeBooking;
+      return { ...r, status: isOccupied ? 'Occupied' : (r.status === 'Occupied' ? 'Available' : r.status) };
     });
   }, [rooms, bookings, branch]);
+
+  // Real-time ground truth auto-healing effect for room status in Firestore & state
+  useEffect(() => {
+    if (!rooms || rooms.length === 0 || !bookings) return;
+    
+    rooms.forEach(r => {
+      const hasActiveCheckedIn = bookings.some(b => 
+        (b.roomId === r.id || (b.roomNumber && String(b.roomNumber) === String(r.roomNumber))) && 
+        (b.branch === r.branch || !b.branch) && 
+        (b.status === 'CheckedIn' || (b.status as string) === 'checked_in')
+      );
+
+      if (hasActiveCheckedIn && r.status !== 'Occupied') {
+        if (db) safeSetDoc(doc(db, 'rooms', r.id), { status: 'Occupied' }, { merge: true }).catch(() => {});
+      } else if (!hasActiveCheckedIn && r.status === 'Occupied') {
+        if (db) safeSetDoc(doc(db, 'rooms', r.id), { status: 'Available' }, { merge: true }).catch(() => {});
+      }
+    });
+  }, [rooms, bookings]);
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
@@ -674,6 +698,11 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
   const [editDrinkSaleRoomNumber, setEditDrinkSaleRoomNumber] = useState('');
   const [editDrinkSaleGuestName, setEditDrinkSaleGuestName] = useState('');
   const [editDrinkSaleDrinkId, setEditDrinkSaleDrinkId] = useState('');
+  const [editDrinkSaleSplitPaidAmount, setEditDrinkSaleSplitPaidAmount] = useState<number>(0);
+  const [editDrinkSaleSplitUnpaidAmount, setEditDrinkSaleSplitUnpaidAmount] = useState<number>(0);
+  const [editDrinkSaleSplitCashAmount, setEditDrinkSaleSplitCashAmount] = useState<number>(0);
+  const [editDrinkSaleSplitMomoAmount, setEditDrinkSaleSplitMomoAmount] = useState<number>(0);
+  const [editDrinkSaleSplitPaidMethod, setEditDrinkSaleSplitPaidMethod] = useState<'Cash' | 'Mobile Money'>('Cash');
   const [isProcessingEditSale, setIsProcessingEditSale] = useState(false);
   const [showDeleteSaleConfirm, setShowDeleteSaleConfirm] = useState(false);
   const [saleToDelete, setSaleToDelete] = useState<DrinkSale | null>(null);
@@ -986,6 +1015,9 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
     if (!activeBooking || !selectedRoom) return;
     setIsCheckingIn(true);
     try {
+      const priorPaid = getActualPaidAmount(activeBooking);
+      const balanceToPay = Math.max(0, activeBooking.totalPrice - priorPaid);
+
       updateBookingPayment(currentUser.id, currentUser.name, activeBooking.id, 'Paid');
       
       // Update Firestore Booking
@@ -994,6 +1026,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
         balance_due: 0,
         pending_payment: 0,
         amountPaid: activeBooking.totalPrice,
+        priorAmountPaid: priorPaid > 0 ? priorPaid : activeBooking.totalPrice,
         deposit: activeBooking.totalPrice,
         branch: branch
       }, { merge: true });
@@ -1021,24 +1054,28 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
         }
 
         for (const sale of bookingUnpaidDrinks) {
+          const originalBarPaidAmount = sale.paymentMethod === 'Split (Paid & Unpaid)' || sale.paymentStatus === 'Split' ? (Number(sale.paidAmount) || 0) : 0;
           const updatedSale = {
             ...sale,
             paymentStatus: 'Paid' as const,
-            paidAmount: sale.totalPrice,
+            paidAmount: originalBarPaidAmount, // DO NOT overwrite with totalPrice!
             unpaidAmount: 0,
-            settledPaymentMethod: bookingPaymentMethod
+            settledPaymentMethod: bookingPaymentMethod,
+            settledAmount: getDrinkUnpaidAmount(sale)
           };
           await setDoc(doc(db, 'drinkSales', sale.id), updatedSale, { merge: true });
         }
         const updatedDrinkSalesList = drinkSales.map(s => {
           if (bookingUnpaidDrinks.some(bs => bs.id === s.id)) {
-            return { 
-              ...s, 
-              paymentStatus: 'Paid' as const, 
-              paidAmount: s.totalPrice, 
-              unpaidAmount: 0,
-              settledPaymentMethod: bookingPaymentMethod
-            };
+                          const originalBarPaidAmount = s.paymentMethod === 'Split (Paid & Unpaid)' || s.paymentStatus === 'Split' ? (Number(s.paidAmount) || 0) : 0;
+              return { 
+                 ...s,
+                 paymentStatus: 'Paid' as const,
+                 paidAmount: originalBarPaidAmount,
+                 unpaidAmount: 0,
+                 settledPaymentMethod: bookingPaymentMethod,
+                 settledAmount: getDrinkUnpaidAmount(s)
+              };
           }
           return s;
         });
@@ -1047,7 +1084,6 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
       }
 
       // Log the balance payment to RoomRevenue
-      const balanceToPay = Math.max(0, activeBooking.totalPrice - (activeBooking.amountPaid || 0));
       if (balanceToPay > 0) {
         await logRoomRevenue({
           bookingId: activeBooking.id,
@@ -2045,6 +2081,12 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
   const handleEditDrinkSaleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!saleToEdit) return;
+
+    if (saleToEdit.settledPaymentMethod) {
+      addToast('Validation Error', 'error', 'Cannot edit a drink sale that has already been settled during a room checkout.');
+      return;
+    }
+
     setIsProcessingEditSale(true);
 
     try {
@@ -2062,6 +2104,22 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
         paymentStatus = 'Unpaid';
         paidAmount = 0;
         unpaidAmount = totalPrice;
+      } else if (editDrinkSalePaymentMethod === 'Split (Paid & Unpaid)') {
+        paymentStatus = 'Split';
+        paidAmount = Number(editDrinkSaleSplitPaidAmount) || 0;
+        unpaidAmount = Number(editDrinkSaleSplitUnpaidAmount) || 0;
+        if (Math.abs((paidAmount + unpaidAmount) - totalPrice) > 0.01) {
+          addToast('Validation Error', 'error', 'Paid amount and Unpaid amount must equal total price.');
+          setIsProcessingEditSale(false);
+          return;
+        }
+      } else if (editDrinkSalePaymentMethod === 'Split (Cash + Momo)') {
+        paymentStatus = 'Paid';
+        if (Math.abs((editDrinkSaleSplitCashAmount + editDrinkSaleSplitMomoAmount) - totalPrice) > 0.01) {
+          addToast('Validation Error', 'error', 'Cash amount and MoMo amount must equal total price.');
+          setIsProcessingEditSale(false);
+          return;
+        }
       }
 
       let newBookingId = saleToEdit.bookingId;
@@ -2086,7 +2144,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
         paymentMethod: editDrinkSalePaymentMethod,
         paymentStatus,
         paidAmount,
-        unpaidAmount
+        unpaidAmount,
+        splitCashAmount: editDrinkSalePaymentMethod === 'Split (Cash + Momo)' ? editDrinkSaleSplitCashAmount : undefined,
+        splitMomoAmount: editDrinkSalePaymentMethod === 'Split (Cash + Momo)' ? editDrinkSaleSplitMomoAmount : undefined,
+        splitPaidMethod: editDrinkSalePaymentMethod === 'Split (Paid & Unpaid)' ? editDrinkSaleSplitPaidMethod : undefined
       };
 
       updateDrinkSale(updatedSale);
@@ -2131,6 +2192,12 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
 
   const handleDeleteDrinkSale = async () => {
     if (!saleToDelete) return;
+    
+    if (saleToDelete.settledPaymentMethod) {
+      addToast('Validation Error', 'error', 'Cannot delete a drink sale that has already been settled during a room checkout.');
+      return;
+    }
+
     setIsProcessingEditSale(true);
 
     try {
@@ -2178,12 +2245,18 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
     setEditDrinkSaleRoomNumber(sale.roomNumber || '');
     setEditDrinkSalePaymentMethod(sale.paymentMethod);
     setEditDrinkSaleDrinkId(sale.drinkId || '');
+    setEditDrinkSaleSplitPaidAmount(Number(sale.paidAmount) || 0);
+    setEditDrinkSaleSplitUnpaidAmount(Number(sale.unpaidAmount) || 0);
+    setEditDrinkSaleSplitCashAmount(Number(sale.splitCashAmount) || 0);
+    setEditDrinkSaleSplitMomoAmount(Number(sale.splitMomoAmount) || 0);
+    setEditDrinkSaleSplitPaidMethod((sale.splitPaidMethod as any) || 'Cash');
     setShowEditDrinkSaleModal(true);
   };
 
-  const currentSaleIndex = saleToEdit ? activeShiftDrinkSales.findIndex(s => s.id === saleToEdit.id) : -1;
+  const editableShiftDrinkSales = activeShiftDrinkSales.filter(s => !s.settledPaymentMethod);
+  const currentSaleIndex = saleToEdit ? editableShiftDrinkSales.findIndex(s => s.id === saleToEdit.id) : -1;
   const hasNextSale = currentSaleIndex > 0;
-  const hasPrevSale = currentSaleIndex < activeShiftDrinkSales.length - 1 && currentSaleIndex !== -1;
+  const hasPrevSale = currentSaleIndex < editableShiftDrinkSales.length - 1 && currentSaleIndex !== -1;
 
 
 
@@ -2462,12 +2535,20 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
     paymentMethod?: string;
     isFutureBooking?: boolean;
     isPartialDeposit?: boolean;
+    totalStayCost?: number;
+    previousDeposits?: number;
+    customId?: string;
   }) => {
     try {
       if (!data.amount || Number(data.amount) <= 0) {
         return; // Zero or unpaid balance isolation: do not hit active revenue ledgers
       }
-      const revId = `rev_${Math.random().toString(36).substring(2, 11)}`;
+      const typeKey = data.revenueType.toLowerCase();
+      const revId = data.customId || (
+        data.revenueType === 'ExtensionFee' 
+          ? `rev_ext_${data.bookingId}_${Date.now()}`
+          : `rev_${typeKey}_${data.bookingId}`
+      );
       const userAssignedBranch = currentUser.assignedBranch || currentUser.branch || branch;
       const newRevDoc = {
         id: revId,
@@ -2485,6 +2566,8 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
         paymentMethod: data.paymentMethod || 'Cash',
         isFutureBooking: !!data.isFutureBooking,
         isPartialDeposit: !!data.isPartialDeposit,
+        totalStayCost: data.totalStayCost,
+        previousDeposits: data.previousDeposits,
         timestamp: getFormattedDateTime(),
         dateCreated: new Date().toISOString()
       };
@@ -2709,7 +2792,10 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           receptionistId: currentUser.id,
           receptionistName: currentUser.name,
           revenueType: paymentStatus === 'Paid' ? 'Allocation' : 'Deposit',
-          paymentMethod: bookingPaymentMethod
+          paymentMethod: bookingPaymentMethod,
+          totalStayCost: totalRate,
+          previousDeposits: 0,
+          isFutureBooking: new Date(checkInDate) > new Date()
         }));
       }
 
@@ -3556,6 +3642,11 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
       const finalTotalPrice = roomStayTotal;
       const totalAmountCollected = roomStayTotal + unpaidDrinksTotal;
 
+      // Compute prior deposit paid and checkout room balance due BEFORE mutating the booking record
+      const priorPaidAmount = getActualPaidAmount(selectedBooking);
+      const computedPrior = priorPaidAmount > 0 ? priorPaidAmount : Math.max(0, finalTotalPrice - lateCheckOutFeeApplied);
+      const roomBalanceDue = Math.max(0, (finalTotalPrice - lateCheckOutFeeApplied) - priorPaidAmount);
+
       // 1. Update local data storage
       checkoutBooking(
         currentUser.id,
@@ -3581,8 +3672,6 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
 
         const userAssignedBranch = currentUser.assignedBranch || currentUser.branch || branch;
 
-        const priorPaidAmount = getActualPaidAmount(selectedBooking);
-        const computedPrior = priorPaidAmount > 0 ? priorPaidAmount : Math.max(0, finalTotalPrice - lateCheckOutFeeApplied);
         await setDoc(doc(db, 'bookings', selectedBooking.id), {
           status: 'CheckedOut',
           paymentStatus: 'Paid',
@@ -3608,8 +3697,6 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
 
         // Log checkout payment components to RoomRevenue (Excluding unpaid drink settlement so it moves directly to drink revenue)
         const rObj = rooms.find(rm => rm.id === selectedBooking.roomId);
-        const depositPaid = getActualPaidAmount(selectedBooking);
-        const roomBalanceDue = (finalTotalPrice - lateCheckOutFeeApplied) - depositPaid;
 
         if (roomBalanceDue > 0) {
           await logRoomRevenue({
@@ -3641,23 +3728,28 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           });
 
           for (const sale of bookingUnpaidDrinks) {
+            // Preserve the original amount paid at the bar (if any) to prevent double counting
+            const originalBarPaidAmount = sale.paymentMethod === 'Split (Paid & Unpaid)' || sale.paymentStatus === 'Split' ? (Number(sale.paidAmount) || 0) : 0;
             const updatedSale = {
               ...sale,
               paymentStatus: 'Paid' as const,
-              paidAmount: sale.totalPrice,
+              paidAmount: originalBarPaidAmount, // DO NOT overwrite with totalPrice, preserve actual bar payment
               unpaidAmount: 0,
-              settledPaymentMethod: checkoutPaymentMethod
+              settledPaymentMethod: checkoutPaymentMethod,
+              settledAmount: getDrinkUnpaidAmount(sale) // Track how much was settled via room checkout
             };
             await setDoc(doc(db, 'drinkSales', sale.id), updatedSale, { merge: true });
           }
           const updatedDrinkSalesList = drinkSales.map(s => {
             if (bookingUnpaidDrinks.some(bs => bs.id === s.id)) {
+                            const originalBarPaidAmount = s.paymentMethod === 'Split (Paid & Unpaid)' || s.paymentStatus === 'Split' ? (Number(s.paidAmount) || 0) : 0;
               return { 
-                ...s, 
-                paymentStatus: 'Paid' as const, 
-                paidAmount: s.totalPrice, 
-                unpaidAmount: 0, 
-                settledPaymentMethod: checkoutPaymentMethod
+                 ...s,
+                 paymentStatus: 'Paid' as const,
+                 paidAmount: originalBarPaidAmount,
+                 unpaidAmount: 0,
+                 settledPaymentMethod: checkoutPaymentMethod,
+                 settledAmount: getDrinkUnpaidAmount(s)
               };
             }
             return s;
@@ -3705,8 +3797,6 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
       setActiveBooking(null);
 
       // Launch final settlement invoice view showing the breakdown of the stay
-      const priorPaidAmount = getActualPaidAmount(selectedBooking);
-      const computedPrior = priorPaidAmount > 0 ? priorPaidAmount : Math.max(0, finalTotalPrice - lateCheckOutFeeApplied);
       setInvoiceBooking({
         ...selectedBooking,
         status: 'CheckedOut',
@@ -3745,8 +3835,15 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
       alert(`Room ${room.roomNumber} belongs to ${room.branch || (branch === 'Annex' ? 'Ayigya' : 'Annex')} branch and is view-only. You cannot change room status across branches.`);
       return;
     }
-    if (room.status === 'Occupied' && newStatus !== 'Occupied') {
-      alert('Cannot change status of occupied room. Please complete guest check-out first.');
+
+    const activeBooking = bookings.find(b => 
+      (b.roomId === room.id || (b.roomNumber && String(b.roomNumber) === String(room.roomNumber))) && 
+      (b.status === 'CheckedIn' || b.status === 'checked_in') && 
+      (b.branch === room.branch || !b.branch || b.branch === branch)
+    );
+
+    if (activeBooking && newStatus !== 'Occupied') {
+      alert('Cannot change status of occupied room with an active guest. Please complete guest check-out first.');
       return;
     }
 
@@ -3864,10 +3961,12 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
   const getRoomEffectiveStatus = (room: Room): RoomStatus => {
     const activeBooking = bookings.find(b => 
       (b.roomId === room.id || (b.roomNumber && String(b.roomNumber) === String(room.roomNumber))) && 
-      b.status === 'CheckedIn' && 
+      (b.status === 'CheckedIn' || b.status === 'checked_in') && 
       (b.branch === room.branch || !b.branch || b.branch === branch)
     );
     if (activeBooking) return 'Occupied';
+    // If it's marked as Occupied but no active booking exists, it's actually Available (or whatever status it was supposed to be)
+    if (room.status === 'Occupied') return 'Available';
     return room.status;
   };
 
@@ -3935,16 +4034,16 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
   const getActiveShiftRevenue = () => {
 
     const isCashMethod = (method?: string) => {
-      if (!method) return true;
+      if (!method) return false;
       const m = method.toLowerCase();
-      if (m.includes('unpaid')) return false;
+      if (m.includes('unpaid') || m.includes('split')) return false;
       return m.includes('cash') || (!m.includes('mobile') && !m.includes('momo') && !m.includes('bank') && !m.includes('pos'));
     };
 
     const isMomoMethod = (method?: string) => {
       if (!method) return false;
       const m = method.toLowerCase();
-      if (m.includes('unpaid')) return false;
+      if (m.includes('unpaid') || m.includes('split')) return false;
       return m.includes('mobile') || m.includes('momo') || m.includes('money');
     };
 
@@ -3952,15 +4051,68 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
     const activeWalkIns = walkInTransactions.filter(isRecordInActiveShift);
 
     const walkInTotal = activeWalkIns.reduce((acc, curr) => acc + Number(curr.amountPaid || curr.totalPrice || 0), 0);
-    const walkInCash = activeWalkIns.filter(t => isCashMethod(t.paymentMethod)).reduce((acc, curr) => acc + Number(curr.amountPaid || curr.totalPrice || 0), 0);
-    const walkInMomo = activeWalkIns.filter(t => isMomoMethod(t.paymentMethod)).reduce((acc, curr) => acc + Number(curr.amountPaid || curr.totalPrice || 0), 0);
+    let walkInCash = 0;
+    let walkInMomo = 0;
+    activeWalkIns.forEach(t => {
+      const amt = Number(t.amountPaid || t.totalPrice || 0);
+      const m = (t.paymentMethod || '').toLowerCase();
+      if (m.includes('split')) {
+        const c = Number((t as any).splitCashAmount);
+        const mo = Number((t as any).splitMomoAmount);
+        if (c > 0 || mo > 0) {
+          walkInCash += c;
+          walkInMomo += mo;
+        } else {
+          walkInCash += amt / 2;
+          walkInMomo += amt / 2;
+        }
+      } else if (isMomoMethod(t.paymentMethod)) {
+        walkInMomo += amt;
+      } else {
+        walkInCash += amt;
+      }
+    });
 
     // Filter room revenues (excluding settled drinks)
     const activeRoomRevs = roomRevenues.filter(r => isRecordInActiveShift(r) && r.revenueType !== 'DrinkSettlement');
 
     const roomTotal = activeRoomRevs.reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
-    const roomCash = activeRoomRevs.filter(r => isCashMethod(r.paymentMethod || r.paymentMode)).reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
-    const roomMomo = activeRoomRevs.filter(r => isMomoMethod(r.paymentMethod || r.paymentMode)).reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
+    let roomCash = 0;
+    let roomMomo = 0;
+    activeRoomRevs.forEach(r => {
+      const amt = Number(r.amount || 0);
+      const methodStr = r.paymentMethod || r.paymentMode || 'Cash';
+      const m = methodStr.toLowerCase();
+      if (m.includes('split')) {
+        const c = Number((r as any).splitCashAmount);
+        const mo = Number((r as any).splitMomoAmount);
+        if (c > 0 || mo > 0) {
+          roomCash += c;
+          roomMomo += mo;
+        } else {
+          const assocBooking = bookings.find(b => b.id === r.bookingId);
+          const bCash = Number((assocBooking as any)?.splitCashAmount);
+          const bMomo = Number((assocBooking as any)?.splitMomoAmount);
+          if (bCash > 0 || bMomo > 0) {
+            const bTotal = bCash + bMomo;
+            if (bTotal > 0 && Math.abs(bTotal - amt) > 0.01) {
+              roomCash += (bCash / bTotal) * amt;
+              roomMomo += (bMomo / bTotal) * amt;
+            } else {
+              roomCash += bCash;
+              roomMomo += bMomo;
+            }
+          } else {
+            roomCash += amt / 2;
+            roomMomo += amt / 2;
+          }
+        }
+      } else if (isMomoMethod(methodStr)) {
+        roomMomo += amt;
+      } else {
+        roomCash += amt;
+      }
+    });
 
     // Filter settled drinks at checkout (DrinkSettlement) recorded during this shift by this receptionist
     const activeDrinkSettlements = roomRevenues.filter(r => isRecordInActiveShift(r) && r.revenueType === 'DrinkSettlement' && r.receptionistId === currentUser.id);
@@ -3972,11 +4124,12 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
     let drinkMomo = 0;
 
     activeDrinkSales.forEach(s => {
-      // EXCLUDE drink sales that were settled at checkout to avoid double counting with RoomRevenue DrinkSettlement
-      if (s.settledPaymentMethod) return;
+      // DO NOT blindly exclude settled drinks, because they might have a partially paid amount at the bar (Split Paid & Unpaid)
+      // The unpaid portion was settled at checkout (DrinkSettlement), but the bar paid portion MUST still be counted in the bar drawer!
+      // if (s.settledPaymentMethod) return; // <-- REMOVED
 
-      // Only count the PAID portion of a sale
-      const paid = Number(s.paidAmount || (s.paymentStatus === 'Paid' ? s.totalPrice : 0));
+      // Only count the PAID portion of a sale, safely handling 0 amounts
+      const paid = Number(s.paidAmount !== undefined && s.paidAmount !== null ? s.paidAmount : (s.paymentStatus === 'Paid' ? s.totalPrice : 0));
       if (paid <= 0) return;
 
       // Also ensure it's not a purely unpaid sale that somehow has a paid amount (safety check)
@@ -4094,6 +4247,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
 
         return {
           id: r.id || `room_rev_${Math.random().toString(36).substring(2, 7)}`,
+          bookingId: r.bookingId,
           type: 'Room Booking' as const,
           description: description,
           roomNumber: r.roomNumber || '',
@@ -4103,7 +4257,12 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
           paymentMethod: r.paymentMethod || r.paymentMode || 'Cash',
           timestamp: r.timestamp || r.date || r.createdAt || getFormattedDateTime(),
           isFutureBooking: isFuture,
-          isPartialDeposit: isPartial
+          isPartialDeposit: isPartial,
+          totalStayCost: r.totalStayCost || total,
+          depositAmount: r.depositAmount || paid,
+          previousDeposits: r.previousDeposits || 0,
+          balanceSettled: r.revenueType === 'CheckInBalance' || r.revenueType === 'CheckoutBalance' || (paid > 0 && total > 0 && paid >= total),
+          paymentCategory: isFuture ? 'Future Lock-In' : (r.revenueType === 'CheckInBalance' || r.revenueType === 'CheckoutBalance' ? 'Balance Settlement' : 'Check-in')
         };
       }),
       ...stats.activeWalkIns.map((w: any) => ({
@@ -5315,21 +5474,44 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                                 const overpaidAmount = Math.max(0, actualPaid - activeBooking.totalPrice);
                                 const roomBalance = Math.max(0, activeBooking.totalPrice - actualPaid);
                                 const totalBalanceDue = roomBalance + unpaidDrinks;
+                                const isFullyPaid = actualPaid >= activeBooking.totalPrice;
+                                const isPartialDeposit = actualPaid > 0 && actualPaid < activeBooking.totalPrice;
                                 return (
                                   <div className="space-y-1.5 pt-1.5 border-t border-dashed border-zinc-750">
                                     <div className="flex justify-between items-center text-[11px]">
-                                      <span className={isDarkMode ? 'text-zinc-500' : 'text-slate-400'}>Room Invoice:</span>
+                                      <span className={isDarkMode ? 'text-zinc-400' : 'text-slate-500'}>Room Invoice:</span>
                                       <span className="font-mono font-bold">GH₵{activeBooking.totalPrice.toFixed(2)}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-[11px]">
+                                      <span className="flex items-center gap-1">
+                                        <span className={isDarkMode ? 'text-zinc-400' : 'text-slate-500'}>
+                                          {isPartialDeposit ? 'Deposit Paid:' : 'Deposit / Amount Paid:'}
+                                        </span>
+                                        {isFullyPaid ? (
+                                          <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-bold rounded">
+                                            Full
+                                          </span>
+                                        ) : isPartialDeposit ? (
+                                          <span className="text-[9px] px-1.5 py-0.2 bg-blue-500/15 text-blue-600 dark:text-blue-400 font-bold rounded">
+                                            Deposit
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                      <span className={`font-mono font-bold ${actualPaid > 0 ? 'text-emerald-600 dark:text-emerald-400' : (isDarkMode ? 'text-zinc-500' : 'text-slate-400')}`}>
+                                        {actualPaid > 0 ? `-GH₵${actualPaid.toFixed(2)}` : 'GH₵0.00'}
+                                      </span>
                                     </div>
                                     {unpaidDrinks > 0 && (
                                       <div className="flex justify-between items-center text-[11px] text-amber-500 font-semibold">
                                         <span>Unpaid Drinks (Room Bill):</span>
-                                        <span className="font-mono">GH₵{unpaidDrinks.toFixed(2)}</span>
+                                        <span className="font-mono font-bold">+GH₵{unpaidDrinks.toFixed(2)}</span>
                                       </div>
                                     )}
                                     <div className="flex justify-between items-center text-[11px] font-bold pt-1 border-t border-zinc-800">
-                                      <span className={isDarkMode ? 'text-zinc-300' : 'text-slate-700'}>Total Balance Due:</span>
-                                      <span className="font-mono text-purple-400">GH₵{totalBalanceDue.toFixed(2)}</span>
+                                      <span className={isDarkMode ? 'text-zinc-200' : 'text-slate-700'}>Total Balance Due:</span>
+                                      <span className={`font-mono font-bold ${totalBalanceDue > 0 ? 'text-purple-600 dark:text-purple-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                                        GH₵{totalBalanceDue.toFixed(2)}
+                                      </span>
                                     </div>
                                     {overpaidAmount > 0 && (
                                       <div className="mt-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-600 dark:text-amber-400 font-medium space-y-1">
@@ -5351,16 +5533,46 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                             </div>
                           )}
 
-                          {/* Amenities list */}
-                          {!isOccupied && room.amenities.length > 0 && (
-                            <div className="flex flex-wrap gap-1 pt-1.5">
-                              {room.amenities.map((a, idx) => (
-                                <span key={idx} className={`text-[9px] font-semibold px-2 py-0.5 rounded border ${
-                                  isDarkMode ? 'bg-zinc-950 text-emerald-500 border-emerald-900/30' : 'bg-white text-emerald-600 border-emerald-200'
-                                }`}>
-                                  {a}
+                          {/* Room Specs & Readiness for Non-Occupied */}
+                          {!isOccupied && (
+                            <div className={`p-3.5 rounded-xl text-xs space-y-2.5 my-1 border transition-colors shadow-sm ${
+                              effectiveStatus === 'Available'
+                                ? (isDarkMode ? 'bg-zinc-950/80 border-emerald-500/30 text-emerald-300' : 'bg-emerald-50/60 border-emerald-200 text-emerald-950')
+                                : effectiveStatus === 'Cleaning'
+                                ? (isDarkMode ? 'bg-zinc-950/80 border-amber-500/30 text-amber-300' : 'bg-amber-50/60 border-amber-200 text-amber-950')
+                                : (isDarkMode ? 'bg-zinc-950/80 border-red-500/30 text-red-300' : 'bg-red-50/60 border-red-200 text-red-950')
+                            }`}>
+                              <div className="flex justify-between items-center text-[10px] font-extrabold uppercase tracking-wider">
+                                <span className="opacity-75">Room Specs & Readiness</span>
+                                <span className="flex items-center gap-1 font-mono font-bold">
+                                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                                    effectiveStatus === 'Available' ? 'bg-emerald-500 animate-pulse' : effectiveStatus === 'Cleaning' ? 'bg-amber-500 animate-spin' : 'bg-red-500'
+                                  }`} />
+                                  {effectiveStatus}
                                 </span>
-                              ))}
+                              </div>
+                              <div className="flex justify-between items-center text-[11px] pt-1.5 border-t border-dashed border-current/20 font-medium">
+                                <span className="opacity-70">Max Guest Capacity:</span>
+                                <span className="font-semibold font-mono">{room.maxGuests || 2} Persons</span>
+                              </div>
+                              {room.amenities && room.amenities.length > 0 ? (
+                                <div className="space-y-1">
+                                  <span className="text-[10px] opacity-60 font-medium block">Features & Amenities:</span>
+                                  <div className="flex flex-wrap gap-1">
+                                    {room.amenities.map((amenity, idx) => (
+                                      <span key={idx} className={`px-2 py-0.5 rounded-md text-[9px] font-bold border ${
+                                        isDarkMode ? 'bg-zinc-900 border-zinc-800 text-zinc-300' : 'bg-white border-slate-200 text-slate-700'
+                                      }`}>
+                                        {amenity}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-[10px] opacity-75 italic pt-0.5">
+                                  {effectiveStatus === 'Available' ? 'Cleaned, sanitized & ready for check-in' : effectiveStatus === 'Cleaning' ? 'Housekeeping in progress' : 'Under maintenance'}
+                                </div>
+                              )}
                             </div>
                           )}
 
@@ -6592,25 +6804,31 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                                 GH₵ {sale.totalPrice.toFixed(2)}
                               </td>
                               <td className="py-3 px-3 text-center">
-                                <div className="flex justify-center items-center gap-1">
-                                  <button
-                                    onClick={() => handleOpenEditDrinkSale(sale)}
-                                    className="p-1.5 rounded-lg hover:bg-purple-500/10 text-purple-400 transition-colors cursor-pointer"
-                                    title="Edit Sale"
-                                  >
-                                    <Edit2 className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setSaleToDelete(sale);
-                                      setShowDeleteSaleConfirm(true);
-                                    }}
-                                    className="p-1.5 rounded-lg hover:bg-rose-500/10 text-rose-400 transition-colors cursor-pointer"
-                                    title="Delete Sale"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
+                                {sale.settledPaymentMethod ? (
+                                  <div className="flex items-center justify-center gap-1 text-[10px] text-zinc-500 font-medium" title="Locked: Settled at Checkout">
+                                    <Lock className="w-3 h-3" /> Settled
+                                  </div>
+                                ) : (
+                                  <div className="flex justify-center items-center gap-1">
+                                    <button
+                                      onClick={() => handleOpenEditDrinkSale(sale)}
+                                      className="p-1.5 rounded-lg hover:bg-purple-500/10 text-purple-400 transition-colors cursor-pointer"
+                                      title="Edit Sale"
+                                    >
+                                      <Edit2 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setSaleToDelete(sale);
+                                        setShowDeleteSaleConfirm(true);
+                                      }}
+                                      className="p-1.5 rounded-lg hover:bg-rose-500/10 text-rose-400 transition-colors cursor-pointer"
+                                      title="Delete Sale"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                )}
                               </td>
                             </tr>
                           ))
@@ -9775,7 +9993,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className={`border rounded-3xl p-6 w-full max-w-sm shadow-2xl relative ${
+              className={`border rounded-3xl p-6 w-full max-w-md shadow-2xl relative ${
                 isDarkMode ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-slate-200'
               }`}
             >
@@ -9789,41 +10007,65 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
               </button>
 
               <div className="flex items-center gap-3 mb-3">
-                <div className={`p-2 rounded-xl ${isDarkMode ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-600'}`}>
-                  <Shield className="w-5 h-5" />
+                <div className={`p-2.5 rounded-xl ${isDarkMode ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-600'}`}>
+                  <LogOut className="w-5 h-5" />
                 </div>
-                <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                  Mandatory Shift Handover
-                </h3>
+                <div>
+                  <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                    Sign Out Options
+                  </h3>
+                  <p className="text-[11px] font-mono text-zinc-500">
+                    Shift Ending Confirmation
+                  </p>
+                </div>
               </div>
               
-              <p className={`text-sm mb-6 ${isDarkMode ? 'text-zinc-400' : 'text-slate-500'}`}>
-                Direct sign out is locked. You must complete your shift audit and handover before signing out (even if collections are GH₵0.00).
+              <p className={`text-xs mb-6 leading-relaxed ${isDarkMode ? 'text-zinc-400' : 'text-slate-600'}`}>
+                Would you like to complete a shift handover audit to record your cash and mobile money collections before signing out, or sign out directly?
               </p>
 
-              <div className="flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => setShowSignOutModal(false)}
-                  className={`flex-1 py-2.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
-                    isDarkMode 
-                      ? 'bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 text-zinc-400' 
-                      : 'bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 shadow-xs'
-                  }`}
-                >
-                  Cancel
-                </button>
+              <div className="flex flex-col gap-2.5">
                 <button
                   type="button"
                   onClick={() => {
                     setShowSignOutModal(false);
                     handleOpenHandoverModal();
                   }}
-                  className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition-all cursor-pointer shadow-md shadow-purple-500/20 flex items-center justify-center gap-1.5"
+                  className="w-full py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition-all cursor-pointer shadow-md shadow-purple-500/20 flex items-center justify-center gap-2"
                 >
                   <Shield className="w-4 h-4" />
-                  Proceed to Handover
+                  Perform Handover & Sign Out
                 </button>
+
+                <div className="grid grid-cols-2 gap-2.5 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSignOutModal(false);
+                      onLogout();
+                    }}
+                    className={`py-2.5 rounded-xl font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 border ${
+                      isDarkMode 
+                        ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/20' 
+                        : 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200'
+                    }`}
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Direct Sign Out
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowSignOutModal(false)}
+                    className={`py-2.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+                      isDarkMode 
+                        ? 'bg-zinc-800 hover:bg-zinc-750 text-zinc-300 border border-zinc-700' 
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
+                    }`}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>
@@ -10718,7 +10960,6 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
             </motion.div>
           </div>
         )}
-
       </AnimatePresence>
 
       {/* --- EDIT DRINK SALE MODAL --- */}
@@ -10740,7 +10981,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                   <button
                     type="button"
                     disabled={!hasPrevSale}
-                    onClick={() => handleOpenEditDrinkSale(activeShiftDrinkSales[currentSaleIndex + 1])}
+                    onClick={() => handleOpenEditDrinkSale(editableShiftDrinkSales[currentSaleIndex + 1])}
                     className={`p-1.5 rounded-md transition-all ${hasPrevSale ? 'hover:bg-zinc-700 text-zinc-300' : 'text-zinc-600 opacity-30 cursor-not-allowed'}`}
                   >
                     <ChevronLeft className="w-4 h-4" />
@@ -10749,19 +10990,16 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                   <button
                     type="button"
                     disabled={!hasNextSale}
-                    onClick={() => handleOpenEditDrinkSale(activeShiftDrinkSales[currentSaleIndex - 1])}
+                    onClick={() => handleOpenEditDrinkSale(editableShiftDrinkSales[currentSaleIndex - 1])}
                     className={`p-1.5 rounded-md transition-all ${hasNextSale ? 'hover:bg-zinc-700 text-zinc-300' : 'text-zinc-600 opacity-30 cursor-not-allowed'}`}
                   >
                     <ChevronRight className="w-4 h-4" />
                   </button>
                 </div>
-
                 <button
                   type="button"
                   onClick={() => setShowEditDrinkSaleModal(false)}
-                  className={`p-1.5 rounded-lg transition-all cursor-pointer ${
-                    isDarkMode ? 'hover:bg-zinc-800 text-zinc-500' : 'hover:bg-slate-100 text-slate-500'
-                  }`}
+                  className={`p-1.5 rounded-lg transition-all cursor-pointer ${isDarkMode ? 'hover:bg-zinc-800 text-zinc-500' : 'hover:bg-slate-100 text-slate-500'}`}
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -10776,7 +11014,7 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                     Edit Drink Sale
                   </h3>
                   <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter">
-                    {saleToEdit.serialNumber || saleToEdit.id.slice(0, 8)} • {currentSaleIndex + 1} of {activeShiftDrinkSales.length}
+                    {saleToEdit.serialNumber || saleToEdit.id.slice(0, 8)} • {currentSaleIndex + 1} of {editableShiftDrinkSales.length}
                   </p>
                 </div>
               </div>
@@ -10857,16 +11095,176 @@ export default function ReceptionistDashboard({ currentUser, onLogout, isDarkMod
                   <label className="text-[10px] font-mono uppercase tracking-wider font-bold text-zinc-400">
                     Payment Method
                   </label>
-                  <select
-                    value={editDrinkSalePaymentMethod}
-                    onChange={(e) => setEditDrinkSalePaymentMethod(e.target.value as any)}
-                    className={`w-full px-3 py-2 rounded-xl border text-xs outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500/30 transition-all ${theme.input}`}
-                  >
-                    <option value="Cash">Cash</option>
-                    <option value="Mobile Money">Mobile Money</option>
-                    <option value="Split (Cash + Momo)">Split (Cash + Momo)</option>
-                    <option value="Unpaid (Add to Room Bill)">Unpaid (Add to Room Bill)</option>
-                  </select>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditDrinkSalePaymentMethod('Cash')}
+                      className={`px-3 py-2 rounded-xl text-[11px] font-bold transition-all border flex items-center justify-center gap-1.5 cursor-pointer ${
+                        editDrinkSalePaymentMethod === 'Cash'
+                          ? 'bg-emerald-600 text-white border-emerald-500 shadow-md'
+                          : (isDarkMode ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-600')
+                      }`}
+                    >
+                      Cash
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditDrinkSalePaymentMethod('Mobile Money')}
+                      className={`px-3 py-2 rounded-xl text-[11px] font-bold transition-all border flex items-center justify-center gap-1.5 cursor-pointer ${
+                        editDrinkSalePaymentMethod === 'Mobile Money'
+                          ? 'bg-blue-600 text-white border-blue-500 shadow-md'
+                          : (isDarkMode ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-600')
+                      }`}
+                    >
+                      MoMo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditDrinkSalePaymentMethod('Split (Cash + Momo)');
+                        const total = (Number(editDrinkSaleQty) || 0) * (saleToEdit.unitPrice || (saleToEdit.items?.[0]?.unitPrice) || 0);
+                        setEditDrinkSaleSplitCashAmount(total);
+                        setEditDrinkSaleSplitMomoAmount(0);
+                      }}
+                      className={`px-3 py-2 rounded-xl text-[11px] font-bold transition-all border flex items-center justify-center gap-1.5 cursor-pointer ${
+                        editDrinkSalePaymentMethod === 'Split (Cash + Momo)'
+                          ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
+                          : (isDarkMode ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-600')
+                      }`}
+                    >
+                      Split Cash+MoMo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditDrinkSalePaymentMethod('Unpaid (Add to Room Bill)')}
+                      className={`px-3 py-2 rounded-xl text-[11px] font-bold transition-all border flex items-center justify-center gap-1.5 cursor-pointer ${
+                        editDrinkSalePaymentMethod === 'Unpaid (Add to Room Bill)'
+                          ? 'bg-amber-600 text-white border-amber-500 shadow-md'
+                          : (isDarkMode ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-600')
+                      }`}
+                    >
+                      Unpaid (Room Bill)
+                    </button>
+                  </div>
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditDrinkSalePaymentMethod('Split (Paid & Unpaid)');
+                        const total = (Number(editDrinkSaleQty) || 0) * (saleToEdit.unitPrice || (saleToEdit.items?.[0]?.unitPrice) || 0);
+                        setEditDrinkSaleSplitPaidAmount(total);
+                        setEditDrinkSaleSplitUnpaidAmount(0);
+                      }}
+                      className={`w-full px-3 py-2 rounded-xl text-[11px] font-bold transition-all border flex items-center justify-center gap-1.5 cursor-pointer ${
+                        editDrinkSalePaymentMethod === 'Split (Paid & Unpaid)'
+                          ? 'bg-purple-600 text-white border-purple-500 shadow-md'
+                          : (isDarkMode ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-600')
+                      }`}
+                    >
+                      Split (Paid & Unpaid / Room Bill)
+                    </button>
+                  </div>
+
+                  {editDrinkSalePaymentMethod === 'Split (Cash + Momo)' && (
+                    <div className={`grid grid-cols-2 gap-3 mt-3 p-3 rounded-xl border ${isDarkMode ? 'bg-indigo-500/5 border-indigo-500/20' : 'bg-indigo-50 border-indigo-100'}`}>
+                      <div className="flex flex-col justify-end">
+                        <label className={`block text-[10px] font-mono mb-1 leading-tight ${isDarkMode ? 'text-zinc-400' : 'text-slate-500'}`}>Cash Amount (GH₵)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={editDrinkSaleSplitCashAmount}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setEditDrinkSaleSplitCashAmount(val);
+                            const total = (Number(editDrinkSaleQty) || 0) * (saleToEdit.unitPrice || (saleToEdit.items?.[0]?.unitPrice) || 0);
+                            setEditDrinkSaleSplitMomoAmount(Math.max(0, total - val));
+                          }}
+                          className={`block w-full px-3 py-2 rounded-lg text-xs border ${theme.input}`}
+                        />
+                      </div>
+                      <div className="flex flex-col justify-end">
+                        <label className={`block text-[10px] font-mono mb-1 leading-tight ${isDarkMode ? 'text-zinc-400' : 'text-slate-500'}`}>MoMo Amount (GH₵)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={editDrinkSaleSplitMomoAmount}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setEditDrinkSaleSplitMomoAmount(val);
+                            const total = (Number(editDrinkSaleQty) || 0) * (saleToEdit.unitPrice || (saleToEdit.items?.[0]?.unitPrice) || 0);
+                            setEditDrinkSaleSplitCashAmount(Math.max(0, total - val));
+                          }}
+                          className={`block w-full px-3 py-2 rounded-lg text-xs border ${theme.input}`}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {editDrinkSalePaymentMethod === 'Split (Paid & Unpaid)' && (
+                    <div className={`mt-3 p-3.5 rounded-xl border space-y-3 ${isDarkMode ? 'bg-purple-500/5 border-purple-500/20' : 'bg-purple-50 border-purple-100'}`}>
+                      <div className="flex items-center justify-between gap-2 pb-1 border-b border-purple-200/40 dark:border-purple-800/30">
+                        <span className={`text-[11px] font-bold ${isDarkMode ? 'text-purple-300' : 'text-purple-900'}`}>
+                          Payment Method for Paid Portion:
+                        </span>
+                        <div className="inline-flex p-0.5 rounded-lg bg-slate-200/80 dark:bg-zinc-800 border border-slate-300/80 dark:border-zinc-700">
+                          <button
+                            type="button"
+                            onClick={() => setEditDrinkSaleSplitPaidMethod('Cash')}
+                            className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                              editDrinkSaleSplitPaidMethod === 'Cash' 
+                                ? 'bg-white dark:bg-zinc-600 text-emerald-600 dark:text-emerald-400 shadow-sm' 
+                                : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700 dark:hover:text-zinc-200'
+                            }`}
+                          >
+                            Cash
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditDrinkSaleSplitPaidMethod('Mobile Money')}
+                            className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                              editDrinkSaleSplitPaidMethod === 'Mobile Money' 
+                                ? 'bg-white dark:bg-zinc-600 text-blue-600 dark:text-blue-400 shadow-sm' 
+                                : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700 dark:hover:text-zinc-200'
+                            }`}
+                          >
+                            MoMo
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="flex flex-col justify-end">
+                          <label className={`block text-[10px] font-mono mb-1 leading-tight ${isDarkMode ? 'text-zinc-400' : 'text-slate-500'}`}>Paid Amount (GH₵)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editDrinkSaleSplitPaidAmount}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value) || 0;
+                              setEditDrinkSaleSplitPaidAmount(val);
+                              const total = (Number(editDrinkSaleQty) || 0) * (saleToEdit.unitPrice || (saleToEdit.items?.[0]?.unitPrice) || 0);
+                              setEditDrinkSaleSplitUnpaidAmount(Math.max(0, total - val));
+                            }}
+                            className={`block w-full px-3 py-2 rounded-lg text-xs border ${theme.input}`}
+                          />
+                        </div>
+                        <div className="flex flex-col justify-end">
+                          <label className={`block text-[10px] font-mono mb-1 leading-tight ${isDarkMode ? 'text-zinc-400' : 'text-slate-500'}`}>Unpaid Amount (GH₵)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editDrinkSaleSplitUnpaidAmount}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value) || 0;
+                              setEditDrinkSaleSplitUnpaidAmount(val);
+                              const total = (Number(editDrinkSaleQty) || 0) * (saleToEdit.unitPrice || (saleToEdit.items?.[0]?.unitPrice) || 0);
+                              setEditDrinkSaleSplitPaidAmount(Math.max(0, total - val));
+                            }}
+                            className={`block w-full px-3 py-2 rounded-lg text-xs border ${theme.input}`}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="pt-4 border-t border-zinc-800/50 flex justify-between items-center gap-4">

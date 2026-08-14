@@ -56,7 +56,7 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
       setMainAvailableRooms(main);
       setAnnexAvailableRooms(annex);
 
-      // Auto-heal: If any room document in Firestore is listed as Available but has an active CheckedIn booking, fix it
+      // Auto-heal: Ensure Firestore room status perfectly matches ground-truth active checked-in bookings
       if (isFirebaseConfigured && db) {
         roomsList.forEach(r => {
           const hasActiveCheckedIn = bookingsList.some(b => 
@@ -66,6 +66,8 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
           );
           if (hasActiveCheckedIn && r.status !== 'Occupied') {
             safeSetDoc(doc(db, 'rooms', r.id), { status: 'Occupied' }, { merge: true }).catch(() => {});
+          } else if (!hasActiveCheckedIn && r.status === 'Occupied') {
+            safeSetDoc(doc(db, 'rooms', r.id), { status: 'Available' }, { merge: true }).catch(() => {});
           }
         });
       }

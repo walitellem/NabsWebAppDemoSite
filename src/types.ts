@@ -70,6 +70,7 @@ export interface Booking {
   createdAt: string;
   actualCheckOutDate?: string;
   amountPaid?: number;
+  priorAmountPaid?: number;
   deposit?: number;
   amountReceived?: number;
   balance_due?: number;
@@ -192,6 +193,13 @@ export interface HandoverItemBreakdown {
   isFutureBooking?: boolean;
   isPartialDeposit?: boolean;
   bookingType?: string;
+  bookingId?: string;
+  // Financial breakdown for audit
+  totalStayCost?: number;
+  depositAmount?: number;
+  previousDeposits?: number;
+  balanceSettled?: boolean;
+  paymentCategory?: 'Check-in' | 'Balance Settlement' | 'Future Lock-In' | 'Extension' | string;
 }
 
 export interface HandoverRecord {
@@ -253,6 +261,8 @@ export interface PendingEditRequest {
   proposedPaymentStatus?: PaymentStatus;
   proposedAmountPaid?: number;
   proposedPaymentMethod?: string;
+  splitCashAmount?: number;
+  splitMomoAmount?: number;
   
   // Financial impact
   priceDifference: number; // Proposed total minus current total

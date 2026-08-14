@@ -24,6 +24,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { useToast } from './ToastContext';
 import { useLoading } from './LoadingContext';
+import { validateRevenueIntegrity, RevenueAnomaly } from '../utils/revenueValidator';
 import { BestSellingDrinks } from './BestSellingDrinks';
 import { DateRangePicker } from './DateRangePicker';
 import { WalkInActivityLedger } from './WalkInActivityLedger';
@@ -438,6 +439,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     processedBookingsCount?: number;
     branchBreakdown?: { name: string; revenue: number; volume: number }[];
     dataEntries?: any[];
+    revenueLabel?: string;
     reportType?: 'bookings' | 'monthly' | 'yearly';
   }) => {
     setPrintPreviewConfig(config);
@@ -469,13 +471,30 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
   const [pendingEditsFilter, setPendingEditsFilter] = useState<'All' | 'Pending' | 'Approved' | 'Rejected'>('Pending');
   const [rejectionInputId, setRejectionInputId] = useState<string | null>(null);
   const [rejectionReasonText, setRejectionReasonText] = useState<string>('');
+  const [processingEditRequestId, setProcessingEditRequestId] = useState<string | null>(null);
 
   const handleApproveEditRequest = async (req: PendingEditRequest) => {
+    if (processingEditRequestId) return;
+    setProcessingEditRequestId(req.id);
     try {
       const booking = bookings.find(b => b.id === req.bookingId);
       if (!booking) {
         addToast("Booking Not Found", "error", "The associated booking for this request could not be found.");
         return;
+      }
+
+      const totalPrice = req.proposedTotalPrice || booking.totalPrice;
+      const amountPaid = req.proposedAmountPaid !== undefined ? req.proposedAmountPaid : (booking.amountPaid || 0);
+      let effectivePaymentStatus = req.proposedPaymentStatus || booking.paymentStatus || 'Unpaid';
+
+      if (amountPaid < totalPrice && amountPaid > 0) {
+        if (effectivePaymentStatus === 'Paid') {
+          effectivePaymentStatus = (req.proposedPaymentMethod?.includes('Split') || effectivePaymentStatus === 'Partially Paid (Split)') ? 'Partially Paid (Split)' : 'Partial';
+        }
+      } else if (amountPaid >= totalPrice && totalPrice > 0) {
+        effectivePaymentStatus = 'Paid';
+      } else if (amountPaid === 0) {
+        effectivePaymentStatus = 'Unpaid';
       }
 
       const updatedBookingFields: Partial<Booking> = {
@@ -484,7 +503,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
         checkInDate: req.proposedCheckInDate,
         checkOutDate: req.proposedCheckOutDate,
         totalPrice: req.proposedTotalPrice,
-        ...(req.proposedPaymentStatus && { paymentStatus: req.proposedPaymentStatus }),
+        paymentStatus: effectivePaymentStatus,
         ...(req.proposedAmountPaid !== undefined && { 
           amountPaid: req.proposedAmountPaid,
           deposit: req.proposedAmountPaid,
@@ -492,6 +511,8 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
           pending_payment: Math.max(0, req.proposedTotalPrice - req.proposedAmountPaid)
         }),
         ...(req.proposedPaymentMethod && { paymentMethod: req.proposedPaymentMethod }),
+        ...(req.splitCashAmount !== undefined && { splitCashAmount: req.splitCashAmount }),
+        ...(req.splitMomoAmount !== undefined && { splitMomoAmount: req.splitMomoAmount }),
       };
 
       if (req.guestName) updatedBookingFields.guestName = req.guestName;
@@ -514,6 +535,9 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
           const hasAmountChange = req.proposedAmountPaid !== undefined && 
             (req.proposedAmountPaid !== req.currentAmountPaid || req.proposedAmountPaid !== totalCurrentRev);
           
+          const revSplitCash = req.splitCashAmount !== undefined ? req.splitCashAmount : ((booking as any).splitCashAmount || 0);
+          const revSplitMomo = req.splitMomoAmount !== undefined ? req.splitMomoAmount : ((booking as any).splitMomoAmount || 0);
+
           if (hasPaymentMethodChange || hasAmountChange) {
             const proposedAmt = req.proposedAmountPaid !== undefined ? req.proposedAmountPaid : totalCurrentRev;
             const amtDiff = proposedAmt - totalCurrentRev;
@@ -524,7 +548,11 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                 if (hasPaymentMethodChange) {
                   for (const rev of matchingRevs) {
                     if (rev.id) {
-                      await safeUpdateDoc(doc(db, 'RoomRevenue', rev.id), { paymentMethod: req.proposedPaymentMethod });
+                      await safeUpdateDoc(doc(db, 'RoomRevenue', rev.id), { 
+                        paymentMethod: req.proposedPaymentMethod,
+                        splitCashAmount: req.proposedPaymentMethod === 'Split (Cash + Momo)' ? revSplitCash : 0,
+                        splitMomoAmount: req.proposedPaymentMethod === 'Split (Cash + Momo)' ? revSplitMomo : 0
+                      });
                     }
                   }
                 }
@@ -544,6 +572,8 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                   revenueType: 'BalanceSettlement',
                   revenueSubType: '',
                   paymentMethod: req.proposedPaymentMethod || booking.paymentMethod || 'Cash',
+                  splitCashAmount: (req.proposedPaymentMethod || booking.paymentMethod) === 'Split (Cash + Momo)' ? revSplitCash : 0,
+                  splitMomoAmount: (req.proposedPaymentMethod || booking.paymentMethod) === 'Split (Cash + Momo)' ? revSplitMomo : 0,
                   isFutureBooking: false,
                   isPartialDeposit: false,
                   timestamp: getFormattedDateTime(),
@@ -574,7 +604,11 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                    
                    const updateData: any = {};
                    if (newAmount !== currentRevAmount) updateData.amount = newAmount;
-                   if (hasPaymentMethodChange) updateData.paymentMethod = req.proposedPaymentMethod;
+                   if (hasPaymentMethodChange) {
+                     updateData.paymentMethod = req.proposedPaymentMethod;
+                     updateData.splitCashAmount = req.proposedPaymentMethod === 'Split (Cash + Momo)' ? revSplitCash : 0;
+                     updateData.splitMomoAmount = req.proposedPaymentMethod === 'Split (Cash + Momo)' ? revSplitMomo : 0;
+                   }
                    
                    if (Object.keys(updateData).length > 0 && rev.id) {
                      await safeUpdateDoc(doc(db, 'RoomRevenue', rev.id), updateData);
@@ -584,7 +618,11 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
             } else if (hasPaymentMethodChange) {
               for (const rev of matchingRevs) {
                 if (rev.id) {
-                  await safeUpdateDoc(doc(db, 'RoomRevenue', rev.id), { paymentMethod: req.proposedPaymentMethod });
+                  await safeUpdateDoc(doc(db, 'RoomRevenue', rev.id), { 
+                    paymentMethod: req.proposedPaymentMethod,
+                    splitCashAmount: req.proposedPaymentMethod === 'Split (Cash + Momo)' ? revSplitCash : 0,
+                    splitMomoAmount: req.proposedPaymentMethod === 'Split (Cash + Momo)' ? revSplitMomo : 0
+                  });
                 }
               }
             }
@@ -686,17 +724,19 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
       if (req.currentRoomId !== req.proposedRoomId) {
         const oldRoom = rooms.find(r => r.id === req.currentRoomId);
         const newRoom = rooms.find(r => r.id === req.proposedRoomId);
+        const targetBooking = bookings.find(b => b.id === req.bookingId);
+        const isCurrentlyCheckedIn = targetBooking ? (targetBooking.status === 'CheckedIn' || (targetBooking.status as string) === 'checked_in') : false;
 
         if (oldRoom && db) {
           await safeUpdateDoc(doc(db, 'rooms', oldRoom.id), { status: 'Available' });
         }
         if (newRoom && db) {
-          await safeUpdateDoc(doc(db, 'rooms', newRoom.id), { status: 'Occupied' });
+          await safeUpdateDoc(doc(db, 'rooms', newRoom.id), { status: isCurrentlyCheckedIn ? 'Occupied' : 'Available' });
         }
 
         const updatedRooms = rooms.map(r => {
           if (r.id === req.currentRoomId) return { ...r, status: 'Available' as RoomStatus };
-          if (r.id === req.proposedRoomId) return { ...r, status: 'Occupied' as RoomStatus };
+          if (r.id === req.proposedRoomId) return { ...r, status: (isCurrentlyCheckedIn ? 'Occupied' : 'Available') as RoomStatus };
           return r;
         });
         setRooms(updatedRooms);
@@ -747,10 +787,14 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     } catch (err: any) {
       console.error("Error approving edit request:", err);
       addToast("Approval Error", "error", err.message || "Could not approve request.", 4000);
+    } finally {
+      setProcessingEditRequestId(null);
     }
   };
 
   const handleRejectEditRequest = async (req: PendingEditRequest) => {
+    if (processingEditRequestId) return;
+    setProcessingEditRequestId(req.id);
     try {
       const reviewedAt = new Date().toISOString();
       const reason = rejectionReasonText.trim() || 'Rejected by manager';
@@ -793,6 +837,8 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     } catch (err: any) {
       console.error("Error rejecting edit request:", err);
       addToast("Rejection Error", "error", err.message || "Could not reject request.", 4000);
+    } finally {
+      setProcessingEditRequestId(null);
     }
   };
   
@@ -806,7 +852,27 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
 
   const getHandoverBreakdownItems = (handover: HandoverRecord): HandoverItemBreakdown[] => {
     if (handover.itemsBreakdown && handover.itemsBreakdown.length > 0) {
-      return handover.itemsBreakdown;
+      return handover.itemsBreakdown.map(item => {
+        if (item.type === 'Room Booking') {
+          const b = bookings.find(book => book.id === item.bookingId || book.id === item.id);
+          if (b) {
+            const isFuture = new Date(b.checkInDate) > new Date(item.timestamp || handover.timestamp);
+            const isSettlement = item.serviceOrType === 'Check-in Balance Settlement' || item.description.includes('Balance Settlement');
+            const total = item.totalStayCost || b.totalPrice || 0;
+            const prev = item.previousDeposits || 0;
+            
+            return {
+              ...item,
+              totalStayCost: total,
+              depositAmount: item.depositAmount || b.amountPaid || item.amount,
+              previousDeposits: prev,
+              balanceSettled: item.balanceSettled || b.paymentStatus === 'Paid',
+              paymentCategory: item.paymentCategory || (isFuture ? 'Future Lock-In' : (isSettlement ? 'Balance Settlement' : 'Check-in'))
+            };
+          }
+        }
+        return item;
+      });
     }
     
     // Dynamic fallback matching for legacy handovers
@@ -850,6 +916,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
 
       items.push({
         id: b.id,
+        bookingId: b.id,
         type: 'Room Booking',
         description: description,
         roomNumber: b.roomNumber,
@@ -857,7 +924,14 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
         serviceOrType: b.roomType || 'Room Check-in',
         amount: b.amountPaid || b.totalPrice || 0,
         paymentMethod: b.paymentMethod || 'Cash',
-        timestamp: b.createdAt || b.checkInDate || handover.timestamp
+        timestamp: b.createdAt || b.checkInDate || handover.timestamp,
+        isFutureBooking: isFuture,
+        isPartialDeposit: isPartial,
+        totalStayCost: b.totalPrice,
+        depositAmount: b.amountPaid,
+        previousDeposits: 0,
+        balanceSettled: b.paymentStatus === 'Paid',
+        paymentCategory: isFuture ? 'Future Lock-In' : 'Check-in'
       });
     });
 
@@ -1181,6 +1255,12 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
   };
 
   const getDrinkPaidAmount = (s: any) => {
+    // If it was settled at checkout, we must look at what was ORIGINALLY paid at the bar (if any)
+    if (s.settledPaymentMethod) {
+       if (s.paymentMethod === 'Unpaid (Add to Room Bill)' || s.paymentStatus === 'Unpaid') return 0;
+       return Number(s.paidAmount !== undefined && s.paidAmount !== null ? s.paidAmount : (s.paymentStatus === 'Paid' ? s.totalPrice : 0));
+    }
+    
     if (s.paymentStatus === 'Paid') return Number(s.totalPrice || 0);
     if (s.paymentStatus === 'Unpaid') return 0;
     if (s.paymentStatus === 'Split') return Number(s.paidAmount || 0);
@@ -1190,7 +1270,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
   };
 
   const isDrinkSettledToRoom = (s: any) => {
-    return s.paymentMethod === 'Unpaid (Add to Room Bill)' || s.paymentStatus === 'Unpaid' || !!s.settledPaymentMethod;
+    // We DO NOT blindly consider settledPaymentMethod as fully settled-to-room because 
+    // it could be a Split (Paid & Unpaid) where a portion was paid at the bar!
+    // The bar portion MUST still be counted in the bar ledger!
+    return s.paymentMethod === 'Unpaid (Add to Room Bill)' || s.paymentStatus === 'Unpaid';
   };
 
   const coreLodgeTransactions = React.useMemo(() => {
@@ -1199,7 +1282,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
       if (b.status === 'Cancelled') return;
       const bRevenues = roomRevenue.filter(r => r.bookingId === b.id);
       const extRevsSum = bRevenues.filter(r => r.revenueType === 'ExtensionFee').reduce((sum, r) => sum + Number(r.amount || 0), 0);
-      const roomRevsSum = bRevenues.filter(r => r.revenueType !== 'ExtensionFee').reduce((sum, r) => sum + Number(r.amount || 0), 0);
+      const roomRevsSum = bRevenues.filter(r => r.revenueType !== 'ExtensionFee' && r.revenueType !== 'DrinkSettlement').reduce((sum, r) => sum + Number(r.amount || 0), 0);
       
       const expectedExt = Number(b.lateCheckOutFeeApplied || 0);
       if (expectedExt > extRevsSum) {
@@ -1225,14 +1308,16 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
       expectedRoom = Math.max(0, expectedRoom - expectedExt);
 
       if (expectedRoom > roomRevsSum) {
+        const isCheckedOut = b.status === 'CheckedOut' || b.status === 'checked_out';
+        const fallbackTs = (isCheckedOut && b.actualCheckOutDate) ? b.actualCheckOutDate : (b.createdAt || b.dateCreated || b.checkInDate);
         legacyBookings.push({ 
           bookingId: b.id, 
-          timestamp: b.createdAt || b.dateCreated || b.checkInDate, 
+          timestamp: fallbackTs, 
           amountVal: expectedRoom - roomRevsSum, 
           branch: b.branch, 
           lodgeBranch: b.branch,
           roomType: b.roomType,
-          revenueType: 'RoomPayment'
+          revenueType: isCheckedOut ? 'CheckoutBalance' : 'RoomPayment'
         });
       }
     });
@@ -1328,6 +1413,25 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
       return matchesYear && matchesMonth;
     });
   };
+
+  // Real-time ground truth auto-healing effect for room status in Firestore & state
+  useEffect(() => {
+    if (!rooms || rooms.length === 0 || !bookings) return;
+    
+    rooms.forEach(r => {
+      const hasActiveCheckedIn = bookings.some(b => 
+        (b.roomId === r.id || (b.roomNumber && String(b.roomNumber) === String(r.roomNumber))) && 
+        (b.branch === r.branch || !b.branch) && 
+        (b.status === 'CheckedIn' || (b.status as string) === 'checked_in')
+      );
+
+      if (hasActiveCheckedIn && r.status !== 'Occupied') {
+        if (db) safeSetDoc(doc(db, 'rooms', r.id), { status: 'Occupied' }, { merge: true }).catch(() => {});
+      } else if (!hasActiveCheckedIn && r.status === 'Occupied') {
+        if (db) safeSetDoc(doc(db, 'rooms', r.id), { status: 'Available' }, { merge: true }).catch(() => {});
+      }
+    });
+  }, [rooms, bookings]);
 
   useEffect(() => {
     // 1. Calculate Annual Revenue Trend
@@ -1482,7 +1586,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
         
         pdf.setFontSize(9);
         pdf.setTextColor(100, 116, 139);
-        pdf.text(cleanPdfText("COMBINED TOTAL REVENUE"), 18, 68);
+        pdf.text(cleanPdfText(printPreviewConfig.revenueLabel?.toUpperCase() || "COMBINED TOTAL REVENUE"), 18, 68);
         pdf.text(cleanPdfText("TOTAL BOOKINGS VOLUME"), 80, 68);
         pdf.text(cleanPdfText("REPORTING SCOPE STATUS"), 140, 68);
 
@@ -2834,8 +2938,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
       const paidAmount = getDrinkPaidAmount(s);
       const status = s.paymentStatus || 'Paid';
       
-      // SKIP drinks that were settled at checkout to avoid double counting with RoomRevenue DrinkSettlement entries
-      if (s.settledPaymentMethod) return;
+      // DO NOT blindly skip settled drinks. Only skip if nothing was paid at the bar.
+      // if (s.settledPaymentMethod) return; // REMOVED
+      if (paidAmount <= 0) return; // Wait, let's just make sure we only push if paidAmount > 0
+
 
       entries.push({
         id: s.id,
@@ -3015,15 +3121,13 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     const revenue = baseLodgingRevenue + extensionRevenue + activityRevenue + barRevenue;
 
     const totalRmsCount = branchRooms.length;
-    const occupiedCount = branchRooms.filter(r => {
-      const isStatusOccupied = r.status === 'Occupied' || !!r.guestName;
-      const hasActiveBooking = bookings.some(b => 
+    const occupiedCount = branchRooms.filter(r => 
+      bookings.some(b => 
         (b.roomId === r.id || String(b.roomNumber) === String(r.roomNumber)) && 
         (b.branch === branch || !b.branch) && 
-        (b.status === 'CheckedIn' || b.status === 'checked_in')
-      );
-      return isStatusOccupied || hasActiveBooking;
-    }).length;
+        (b.status === 'CheckedIn' || (b.status as string) === 'checked_in')
+      )
+    ).length;
     const maintenanceCount = branchRooms.filter(r => r.status === 'Maintenance').length;
     const occupancyRate = totalRmsCount > 0 ? (occupiedCount / totalRmsCount) * 100 : 0;
 
@@ -3083,16 +3187,16 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     };
 
     const isCashMethod = (method?: string) => {
-      if (!method) return true;
+      if (!method) return false;
       const m = method.toLowerCase();
-      if (m.includes('unpaid')) return false;
+      if (m.includes('unpaid') || m.includes('split')) return false;
       return m.includes('cash') || (!m.includes('mobile') && !m.includes('momo') && !m.includes('bank') && !m.includes('pos'));
     };
 
     const isMomoMethod = (method?: string) => {
       if (!method) return false;
       const m = method.toLowerCase();
-      if (m.includes('unpaid')) return false;
+      if (m.includes('unpaid') || m.includes('split')) return false;
       return m.includes('mobile') || m.includes('momo') || m.includes('money');
     };
 
@@ -3100,15 +3204,68 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     const activeWalkIns = activityTransactions.filter(isRecordInActiveShift);
 
     const walkInTotal = activeWalkIns.reduce((acc, curr) => acc + Number(curr.amountPaid || curr.totalPrice || 0), 0);
-    const walkInCash = activeWalkIns.filter(t => isCashMethod(t.paymentMethod)).reduce((acc, curr) => acc + Number(curr.amountPaid || curr.totalPrice || 0), 0);
-    const walkInMomo = activeWalkIns.filter(t => isMomoMethod(t.paymentMethod)).reduce((acc, curr) => acc + Number(curr.amountPaid || curr.totalPrice || 0), 0);
+    let walkInCash = 0;
+    let walkInMomo = 0;
+    activeWalkIns.forEach(t => {
+      const amt = Number(t.amountPaid || t.totalPrice || 0);
+      const m = (t.paymentMethod || '').toLowerCase();
+      if (m.includes('split')) {
+        const c = Number((t as any).splitCashAmount);
+        const mo = Number((t as any).splitMomoAmount);
+        if (c > 0 || mo > 0) {
+          walkInCash += c;
+          walkInMomo += mo;
+        } else {
+          walkInCash += amt / 2;
+          walkInMomo += amt / 2;
+        }
+      } else if (isMomoMethod(t.paymentMethod)) {
+        walkInMomo += amt;
+      } else {
+        walkInCash += amt;
+      }
+    });
 
     // 2. Room revenue payments (excluding settled drinks)
     const activeRoomRevs = roomRevenue.filter(r => isRecordInActiveShift(r) && r.revenueType !== 'DrinkSettlement');
 
     const roomTotal = activeRoomRevs.reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
-    const roomCash = activeRoomRevs.filter(r => isCashMethod(r.paymentMethod || r.paymentMode)).reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
-    const roomMomo = activeRoomRevs.filter(r => isMomoMethod(r.paymentMethod || r.paymentMode)).reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
+    let roomCash = 0;
+    let roomMomo = 0;
+    activeRoomRevs.forEach(r => {
+      const amt = Number(r.amount || 0);
+      const methodStr = r.paymentMethod || r.paymentMode || 'Cash';
+      const m = methodStr.toLowerCase();
+      if (m.includes('split')) {
+        const c = Number((r as any).splitCashAmount);
+        const mo = Number((r as any).splitMomoAmount);
+        if (c > 0 || mo > 0) {
+          roomCash += c;
+          roomMomo += mo;
+        } else {
+          const assocBooking = bookings.find(b => b.id === r.bookingId);
+          const bCash = Number((assocBooking as any)?.splitCashAmount);
+          const bMomo = Number((assocBooking as any)?.splitMomoAmount);
+          if (bCash > 0 || bMomo > 0) {
+            const bTotal = bCash + bMomo;
+            if (bTotal > 0 && Math.abs(bTotal - amt) > 0.01) {
+              roomCash += (bCash / bTotal) * amt;
+              roomMomo += (bMomo / bTotal) * amt;
+            } else {
+              roomCash += bCash;
+              roomMomo += bMomo;
+            }
+          } else {
+            roomCash += amt / 2;
+            roomMomo += amt / 2;
+          }
+        }
+      } else if (isMomoMethod(methodStr)) {
+        roomMomo += amt;
+      } else {
+        roomCash += amt;
+      }
+    });
 
     // 3. Drink sales
     const activeDrinkSales = drinkSales.filter(isRecordInActiveShift);
@@ -3118,11 +3275,11 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     let drinkMomo = 0;
 
     activeDrinkSales.forEach(s => {
-      // EXCLUDE drink sales that were settled at checkout to avoid double counting
-      if (s.settledPaymentMethod) return;
+      // DO NOT blindly skip settled drinks because the original bar-paid portion must be counted in the active shift
+      // if (s.settledPaymentMethod) return; // REMOVED
 
       // Only count the PAID portion
-      const paid = Number(s.paidAmount || (s.paymentStatus === 'Paid' ? s.totalPrice : 0));
+      const paid = Number(s.paidAmount !== undefined && s.paidAmount !== null ? s.paidAmount : (s.paymentStatus === 'Paid' ? s.totalPrice : 0));
       if (paid <= 0) return;
 
       // Safety check: skip purely unpaid
@@ -3216,9 +3373,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     const barRevenue = drinkSales
       .filter(s => (s.branch === branch || (s as any).lodgeBranch === branch) && isTargetYear(s.timestamp, s))
       .reduce((acc, curr) => {
-        // Only count drinks that are NOT settled as part of a room bill
-        const isSettledToRoom = curr.paymentMethod === 'Unpaid (Add to Room Bill)' || curr.paymentStatus === 'Unpaid' || !!curr.settledPaymentMethod;
-        if (isSettledToRoom) return acc;
+        // DO NOT unconditionally skip settled drinks! A settled drink might have a bar-paid portion (e.g. Split Paid & Unpaid)
+        // The getDrinkPaidAmount function correctly isolates the bar-paid portion.
+        const isCompletelyUnpaidAtBar = curr.paymentMethod === 'Unpaid (Add to Room Bill)' || curr.paymentStatus === 'Unpaid';
+        if (isCompletelyUnpaidAtBar) return acc;
         
         const paid = getDrinkPaidAmount(curr);
         return acc + paid;
@@ -3519,7 +3677,50 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
     });
   }, [selectedYear, financialData, bookings, rooms]);
 
-  const theme = getThemeClasses(isDarkMode);
+  const anomalies = React.useMemo(() => {
+    return validateRevenueIntegrity(bookings, roomRevenue, drinkSales);
+  }, [bookings, roomRevenue, drinkSales]);
+
+const theme = getThemeClasses(isDarkMode);
+
+  // Helper component for revenue status icons
+  const RevenueStatusIcon = ({ 
+    anomaliesList, 
+    branchFilter 
+  }: { 
+    anomaliesList: RevenueAnomaly[], 
+    branchFilter?: Branch 
+  }) => {
+    const filtered = React.useMemo(() => {
+      if (!branchFilter) return anomaliesList;
+      // Filter anomalies that involve bookings from the specified branch
+      return anomaliesList.filter(a => {
+        if (!a.bookingId) return true;
+        const b = bookings.find(book => book.id === a.bookingId);
+        return b ? b.branch === branchFilter : true;
+      });
+    }, [anomaliesList, branchFilter]);
+
+    if (filtered.length === 0) {
+      return (
+        <div className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-full" title="Data Verified: Matches Raw Ledger">
+          <ShieldCheck className="w-3 h-3" />
+          Verified
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex items-center gap-1 text-[10px] text-rose-600 dark:text-rose-400 font-bold bg-rose-500/10 px-2 py-0.5 rounded-full cursor-help group relative" title="Revenue Discrepancy Found">
+        <AlertTriangle className="w-3 h-3" />
+        Anomaly
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-xl hidden group-hover:block z-[60] text-[11px] text-zinc-700 dark:text-zinc-300 font-normal">
+          <p className="font-bold text-rose-600 mb-1 leading-tight">Integrity Check Failed</p>
+          <p className="leading-relaxed text-[10px]">The system auditor found {filtered.length} discrepancies in the ledger. Review the warning banner at the top of the dashboard for full details.</p>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div id="manager-dashboard-container" tabIndex={-1} className="bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-50 transition-colors duration-200 min-h-screen w-full flex flex-col md:flex-row font-sans outline-none">
@@ -3750,6 +3951,37 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
         {/* Main Content Area */}
       <main className="flex-1 p-4 md:p-6 bg-zinc-50 dark:bg-zinc-950 min-h-screen overflow-y-auto transition-colors duration-300 flex flex-col">
         
+        
+        {/* REVENUE INTEGRITY WARNINGS */}
+        {anomalies.length > 0 && activeTab === 'overview' && (
+          <div className="mb-6 space-y-3">
+            <div className="bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 rounded-xl p-4 shadow-sm">
+              <div className="flex items-center gap-3 mb-3 pb-3 border-b border-rose-200 dark:border-rose-900/50">
+                <div className="bg-rose-100 dark:bg-rose-900/50 p-2 rounded-lg text-rose-600 dark:text-rose-400">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-rose-900 dark:text-rose-100 text-sm">Revenue Reconciliation Anomaly Detected</h3>
+                  <p className="text-xs text-rose-700 dark:text-rose-300">The system auditor caught discrepancies between Raw Ledger Receipts and Categorized Expected Revenue. Double-counting may be occurring.</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {anomalies.map(anomaly => (
+                  <div key={anomaly.id} className="bg-white/60 dark:bg-zinc-900/40 p-3 rounded-lg flex items-start gap-3 border border-rose-100 dark:border-rose-900/30">
+                    <div className="mt-0.5">
+                      <ShieldAlert className="w-4 h-4 text-rose-500 dark:text-rose-400" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-rose-800 dark:text-rose-200 text-xs mb-1">{anomaly.title}</h4>
+                      <p className="text-xs text-rose-700 dark:text-rose-300 leading-relaxed">{anomaly.description}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Mobile Header (only visible on md-) */}
         <header className="w-full h-16 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between px-4 sticky top-0 z-30 md:hidden mb-4 rounded-2xl">
           <div className="flex items-center gap-3">
@@ -4054,7 +4286,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                         <div className={`border rounded-xl p-3 ${
                           isDarkMode ? 'bg-zinc-950 border-zinc-800/60' : 'bg-slate-50 border-slate-100'
                         }`}>
-                          <span className={`text-[10px] font-mono uppercase ${isDarkMode ? 'text-zinc-500' : 'text-slate-400'}`}>Revenue</span>
+                          <div className="flex items-center justify-between">
+                            <span className={`text-[10px] font-mono uppercase ${isDarkMode ? 'text-zinc-500' : 'text-slate-400'}`}>Revenue</span>
+                            <RevenueStatusIcon anomaliesList={anomalies} branchFilter="Annex" />
+                          </div>
                           <div className={`text-sm font-bold mt-1 font-mono ${isDarkMode ? 'text-zinc-200' : 'text-slate-800'}`}>GH₵{annexStats.revenue.toFixed(2)}</div>
                         </div>
                         <div className={`border rounded-xl p-3 ${
@@ -4129,7 +4364,10 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                         <div className={`border rounded-xl p-3 ${
                           isDarkMode ? 'bg-zinc-950 border-zinc-800/60' : 'bg-slate-50 border-slate-100'
                         }`}>
-                          <span className={`text-[10px] font-mono uppercase ${isDarkMode ? 'text-zinc-500' : 'text-slate-400'}`}>Revenue</span>
+                          <div className="flex items-center justify-between">
+                            <span className={`text-[10px] font-mono uppercase ${isDarkMode ? 'text-zinc-500' : 'text-slate-400'}`}>Revenue</span>
+                            <RevenueStatusIcon anomaliesList={anomalies} branchFilter="Ayigya" />
+                          </div>
                           <div className={`text-sm font-bold mt-1 font-mono ${isDarkMode ? 'text-zinc-200' : 'text-slate-800'}`}>GH₵{ayigyaStats.revenue.toFixed(2)}</div>
                         </div>
                         <div className={`border rounded-xl p-3 ${
@@ -5959,6 +6197,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                             }
                             return 0;
                           };
+
                           const totalRevenue = filtered.reduce((sum, b) => sum + calculatePaid(b), 0);
                           const annexBookings = filtered.filter(b => b.branch === 'Annex');
                           const ayigyaBookings = filtered.filter(b => b.branch === 'Ayigya');
@@ -5989,7 +6228,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                               col2: b.guestName,
                               col3: `Room ${b.roomNumber}`,
                               col4: `${b.checkInDate && typeof b.checkInDate === 'string' ? b.checkInDate.substring(0, 10) : 'N/A'} to ${b.checkOutDate && typeof b.checkOutDate === 'string' ? b.checkOutDate.substring(0, 10) : 'N/A'}`,
-                              col5: `GH₵ ${b.totalPrice.toFixed(2)}`,
+                              col5: `GH₵ ${calculatePaid(b).toFixed(2)}`,
                               col6: b.receptionistName || 'N/A',
                               col7: `${b.status} (${b.paymentStatus})`
                             })),
@@ -6002,7 +6241,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                       </button>
                       <button 
                         onClick={() => {
-                          const headers = ['Lodge/Ref', 'Guest Name', 'Email', 'Phone', 'Room', 'In', 'Out', 'Total Price', 'Paid', 'Status', 'Payment', 'Operator'];
+                          const headers = ['Lodge/Ref', 'Guest Name', 'Email', 'Phone', 'Room', 'In', 'Out', 'Total Price', 'Paid', 'Status', 'Payment Status', 'Operator'];
                           const rows = bookings.map(b => [
                             `${b.branch} / ${b.id}`,
                             b.guestName,
@@ -6017,7 +6256,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                             b.paymentStatus,
                             b.receptionistName || 'N/A'
                           ]);
-                          let csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\\n" + rows.map(e => e.map(cell => `"${cell}"`).join(",")).join("\\n");
+                          let csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\n" + rows.map(e => e.map(cell => `"${cell}"`).join(",")).join("\n");
                           const encodedUri = encodeURI(csvContent);
                           const link = document.createElement("a");
                           link.setAttribute("href", encodedUri);
@@ -6052,13 +6291,9 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                       <tbody className="divide-y divide-zinc-850/40 text-xs">
                         {(() => {
                           const filtered = bookings.filter(b => {
-                            // Branch filter
                             if (bookingBranchFilter !== 'All' && b.branch !== bookingBranchFilter) return false;
-                            // Status filter
                             if (bookingStatusFilter !== 'All' && b.status !== bookingStatusFilter) return false;
-                            // Payment filter
                             if (bookingPaymentFilter !== 'All' && b.paymentStatus !== bookingPaymentFilter) return false;
-                            // Date range filter
                             if (bookingStartDate) {
                               const bEnd = b.checkOutDate && typeof b.checkOutDate === 'string' ? b.checkOutDate.substring(0, 10) : '';
                               if (bEnd < bookingStartDate) return false;
@@ -6067,7 +6302,6 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                               const bStart = b.checkInDate && typeof b.checkInDate === 'string' ? b.checkInDate.substring(0, 10) : '';
                               if (bStart > bookingEndDate) return false;
                             }
-                            // Search query
                             if (bookingSearchQuery.trim() !== '') {
                               const q = bookingSearchQuery.toLowerCase();
                               const idStr = String(b.id || '').toLowerCase();
@@ -6107,6 +6341,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                           return filtered.map((b, idx) => {
                             const isPaid = b.paymentStatus === 'Paid';
                             const isPartial = b.paymentStatus === 'Partial' || b.paymentStatus?.includes('Partial');
+                            const paidAmount = isPaid ? b.totalPrice : (isPartial ? (b.deposit || b.amountPaid || b.totalPrice * 0.5) : 0);
 
                             return (
                               <tr key={`${b.id}-${idx}`} className={`hover:bg-zinc-800/10 transition-colors ${
@@ -6146,7 +6381,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                                 <td className="py-3.5 px-4 font-mono font-bold text-sm">
                                   <div className="flex flex-col">
                                     <span>GH₵{b.totalPrice.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                                    <span className="text-[10px] text-zinc-500 font-normal">Paid: GH₵{(b.paymentStatus === 'Paid' ? b.totalPrice : ((b.paymentStatus === 'Partial' || b.paymentStatus?.startsWith('Partially')) ? (b.deposit || b.amountPaid || b.totalPrice * 0.5) : 0)).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                                    <span className="text-[10px] text-zinc-500 font-normal">Paid: GH₵{paidAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
                                   </div>
                                 </td>
                                 <td className="py-3.5 px-4">
@@ -6501,14 +6736,16 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                                     }`}
                                   />
                                   <button
+                                    disabled={!!processingEditRequestId}
                                     onClick={() => handleRejectEditRequest(req)}
-                                    className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white font-bold text-xs rounded-xl cursor-pointer"
+                                    className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white font-bold text-xs rounded-xl cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
-                                    Confirm Reject
+                                    {processingEditRequestId === req.id ? 'Rejecting...' : 'Confirm Reject'}
                                   </button>
                                   <button
+                                    disabled={!!processingEditRequestId}
                                     onClick={() => { setRejectionInputId(null); setRejectionReasonText(''); }}
-                                    className="px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                                    className="px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     Cancel
                                   </button>
@@ -6516,16 +6753,26 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                               ) : (
                                 <>
                                   <button
+                                    disabled={!!processingEditRequestId}
                                     onClick={() => setRejectionInputId(req.id)}
-                                    className="px-4 py-2 border border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500 hover:text-white font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                                    className="px-4 py-2 border border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500 hover:text-white font-bold text-xs rounded-xl transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     Reject Request
                                   </button>
                                   <button
+                                    disabled={!!processingEditRequestId}
                                     onClick={() => handleApproveEditRequest(req)}
-                                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-600/20 transition-all cursor-pointer flex items-center gap-1.5"
+                                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-600/20 transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
-                                    <CheckCircle className="w-4 h-4" /> Approve & Apply Edit
+                                    {processingEditRequestId === req.id ? (
+                                      <>
+                                        <RefreshCw className="w-4 h-4 animate-spin" /> Approving...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <CheckCircle className="w-4 h-4" /> Approve & Apply Edit
+                                      </>
+                                    )}
                                   </button>
                                 </>
                               )}
@@ -6671,12 +6918,13 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                 {/* Live Summary Stat Cards */}
                 {(() => {
                   const getLiveEffectiveStatus = (r: Room): RoomStatus => {
-                    const isOccupied = r.status === 'Occupied' || !!r.guestName || bookings.some(b => 
+                    const hasActiveCheckedIn = bookings.some(b => 
                       (b.roomId === r.id || String(b.roomNumber) === String(r.roomNumber)) && 
                       (b.branch === r.branch || !b.branch) && 
                       (b.status === 'CheckedIn' || (b.status as string) === 'checked_in')
                     );
-                    if (isOccupied) return 'Occupied';
+                    if (hasActiveCheckedIn) return 'Occupied';
+                    if (r.status === 'Occupied') return 'Available';
                     return r.status || 'Available';
                   };
 
@@ -6825,26 +7073,27 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                                         Nabslodge {branchName}
                                       </h3>
                                       <span className={`px-2 py-0.5 text-[10px] font-mono font-bold rounded-full ${isDarkMode ? 'bg-zinc-800 text-zinc-300' : 'bg-slate-200 text-slate-700'}`}>
-                                        {branchRooms.filter(r => r.status === 'Available').length} Available / {branchRooms.length} Total
+                                        {branchRooms.filter(r => getLiveEffectiveStatus(r) === 'Available').length} Available / {branchRooms.length} Total
                                       </span>
                                     </div>
                                   </div>
 
                                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                                     {branchRooms.map(room => {
-                                      const activeBooking = room.status === 'Occupied' 
-                                        ? bookings.find(b => (b.roomId === room.id || b.roomNumber === room.roomNumber) && b.branch === room.branch && b.status === 'CheckedIn')
+                                      const effectiveStatus = getLiveEffectiveStatus(room);
+                                      const activeBooking = effectiveStatus === 'Occupied' 
+                                        ? bookings.find(b => (b.roomId === room.id || String(b.roomNumber) === String(room.roomNumber)) && (b.branch === room.branch || !b.branch) && (b.status === 'CheckedIn' || (b.status as string) === 'checked_in'))
                                         : null;
 
                                       return (
                                         <div
                                           key={room.id}
                                           className={`p-4 rounded-2xl border transition-all duration-200 hover:shadow-lg relative flex flex-col justify-between ${
-                                            room.status === 'Available'
+                                            effectiveStatus === 'Available'
                                               ? (isDarkMode ? 'bg-zinc-900/90 border-emerald-500/40 hover:border-emerald-500' : 'bg-white border-emerald-300 hover:border-emerald-500')
-                                              : room.status === 'Occupied'
+                                              : effectiveStatus === 'Occupied'
                                               ? (isDarkMode ? 'bg-zinc-900/90 border-blue-500/30' : 'bg-white border-blue-200')
-                                              : room.status === 'Cleaning'
+                                              : effectiveStatus === 'Cleaning'
                                               ? (isDarkMode ? 'bg-zinc-900/90 border-amber-500/30' : 'bg-white border-amber-200')
                                               : (isDarkMode ? 'bg-zinc-900/90 border-red-500/30' : 'bg-white border-red-200')
                                           }`}
@@ -6860,15 +7109,15 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                                                 </h4>
                                               </div>
                                               <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                                room.status === 'Available'
+                                                effectiveStatus === 'Available'
                                                   ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30'
-                                                  : room.status === 'Occupied'
+                                                  : effectiveStatus === 'Occupied'
                                                   ? 'bg-blue-500/15 text-blue-500 border border-blue-500/30'
-                                                  : room.status === 'Cleaning'
+                                                  : effectiveStatus === 'Cleaning'
                                                   ? 'bg-amber-500/15 text-amber-500 border border-amber-500/30'
                                                   : 'bg-red-500/15 text-red-500 border border-red-500/30'
                                               }`}>
-                                                {room.status}
+                                                {effectiveStatus}
                                               </span>
                                             </div>
 
@@ -6883,11 +7132,55 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                                               {activeBooking && (() => {
                                                 const actualPaid = getActualPaidAmount(activeBooking);
                                                 const overpaidAmount = Math.max(0, actualPaid - activeBooking.totalPrice);
+                                                const unpaidDrinks = drinkSales
+                                                  .filter(s => (s.bookingId === activeBooking.id || s.roomNumber === (activeBooking.roomNumber || room.roomNumber)) && s.paymentMethod === 'Unpaid (Add to Room Bill)')
+                                                  .reduce((sum, s) => sum + (s.totalPrice || 0), 0);
+                                                const roomBalance = Math.max(0, activeBooking.totalPrice - actualPaid);
+                                                const totalBalanceDue = roomBalance + unpaidDrinks;
+                                                const isFullyPaid = actualPaid >= activeBooking.totalPrice;
+                                                const isPartialDeposit = actualPaid > 0 && actualPaid < activeBooking.totalPrice;
                                                 return (
                                                   <div className={`p-2.5 rounded-xl text-[11px] mt-2 space-y-1.5 border ${isDarkMode ? 'bg-blue-950/40 border-blue-500/20 text-blue-300' : 'bg-blue-50 border border-blue-200 text-blue-900'}`}>
                                                     <div className="font-bold truncate">{activeBooking.guestName}</div>
                                                     <div className="text-[10px] opacity-80 flex items-center gap-1">
                                                       <Clock className="w-3.5 h-3.5" /> Check Out: {activeBooking.checkOutDate}
+                                                    </div>
+                                                    <div className="space-y-1 pt-1.5 border-t border-dashed border-blue-400/30 text-[10px]">
+                                                      <div className="flex justify-between items-center">
+                                                        <span className="opacity-75">Room Invoice:</span>
+                                                        <span className="font-mono font-bold">GH₵{activeBooking.totalPrice.toFixed(2)}</span>
+                                                      </div>
+                                                      <div className="flex justify-between items-center">
+                                                        <span className="flex items-center gap-1">
+                                                          <span className="opacity-75">
+                                                            {isPartialDeposit ? 'Deposit Paid:' : 'Deposit / Amount Paid:'}
+                                                          </span>
+                                                          {isFullyPaid ? (
+                                                            <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-bold rounded">
+                                                              Full
+                                                            </span>
+                                                          ) : isPartialDeposit ? (
+                                                            <span className="text-[9px] px-1.5 py-0.2 bg-blue-500/15 text-blue-600 dark:text-blue-400 font-bold rounded">
+                                                              Deposit
+                                                            </span>
+                                                          ) : null}
+                                                        </span>
+                                                        <span className={`font-mono font-bold ${actualPaid > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'opacity-75'}`}>
+                                                          {actualPaid > 0 ? `-GH₵${actualPaid.toFixed(2)}` : 'GH₵0.00'}
+                                                        </span>
+                                                      </div>
+                                                      {unpaidDrinks > 0 && (
+                                                        <div className="flex justify-between items-center text-amber-600 dark:text-amber-400 font-semibold">
+                                                          <span>Unpaid Drinks (Room Bill):</span>
+                                                          <span className="font-mono font-bold">+GH₵{unpaidDrinks.toFixed(2)}</span>
+                                                        </div>
+                                                      )}
+                                                      <div className="flex justify-between items-center font-bold pt-1 border-t border-blue-400/20">
+                                                        <span>Total Balance Due:</span>
+                                                        <span className={`font-mono font-bold ${totalBalanceDue > 0 ? 'text-purple-600 dark:text-purple-300' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                                                          GH₵{totalBalanceDue.toFixed(2)}
+                                                        </span>
+                                                      </div>
                                                     </div>
                                                     {overpaidAmount > 0 && (
                                                       <div className="p-2 rounded bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-600 dark:text-amber-400 font-medium mt-1">
@@ -6904,7 +7197,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                                                 );
                                               })()}
 
-                                              {room.amenities && room.amenities.length > 0 && (
+                                              {!activeBooking && (
                                                 <div className="flex flex-wrap gap-1 pt-1">
                                                   {room.amenities.slice(0, 3).map((amenity, idx) => (
                                                     <span key={idx} className={`px-1.5 py-0.5 text-[9px] rounded ${isDarkMode ? 'bg-zinc-800 text-zinc-400' : 'bg-slate-100 text-slate-600'}`}>
@@ -7382,7 +7675,16 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                           <tbody>
                             {financialData.monthlyData.map((data, index) => (
                               <tr key={index} className={`border-b last:border-0 ${isDarkMode ? 'border-zinc-800/60' : 'border-slate-100'} transition-colors ${theme.tableRowHover}`}>
-                                <td className={`py-4 px-4 font-bold text-sm ${theme.text}`}>{data.month}</td>
+                                <td className={`py-4 px-4 font-bold text-sm ${theme.text}`}>
+                                  <div className="flex items-center gap-3">
+                                    {data.month}
+                                    {/* 
+                                      For monthly breakdown, we check if ANY anomaly exists in that month.
+                                      For now, let's just show global check if any exist. 
+                                    */}
+                                    <RevenueStatusIcon anomaliesList={anomalies} />
+                                  </div>
+                                </td>
                                 <td className="py-4 px-4 font-mono text-xs text-right text-zinc-500 dark:text-zinc-400">GH₵{data.Annex.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                                 <td className="py-4 px-4 font-mono text-xs text-right text-zinc-500 dark:text-zinc-400">GH₵{data.Ayigya.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                                 <td className={`py-4 px-4 font-mono text-sm font-bold text-right ${theme.text}`}>GH₵{data.Total.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
@@ -8281,7 +8583,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                     {/* Metadata summary cards row */}
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                       <div className="p-2.5 bg-blue-50 border border-blue-100 rounded-lg">
-                        <span className="text-[9px] text-blue-600 uppercase font-bold tracking-wider font-mono block">Combined Revenue</span>
+                        <span className="text-[9px] text-blue-600 uppercase font-bold tracking-wider font-mono block">{printPreviewConfig.revenueLabel || 'Combined Revenue'}</span>
                         <strong className="text-sm text-blue-900 font-extrabold font-mono">
                           GH₵ {printPreviewConfig.totalRevenue?.toLocaleString('en-US', { minimumFractionDigits: 2 }) || '0.00'}
                         </strong>
@@ -8894,16 +9196,74 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                                   <td className={`py-2 px-2 font-medium ${isDarkMode ? 'text-white' : 'text-slate-950'}`}>
                                     {(() => {
                                       const details = getAuditItemDetails(item.description);
+                                      const category = item.paymentCategory || (item.isFutureBooking ? 'Future Lock-In' : (item.serviceOrType === 'Check-in Balance Settlement' ? 'Balance Settlement' : 'Check-in'));
+                                      
                                       return (
-                                        <div className="flex flex-col gap-0.5">
-                                          <span className="break-words">{details.cleanDescription}</span>
-                                          {isFuture && (
-                                            <span className={`text-[11px] font-semibold mt-0.5 ${
-                                              isDarkMode ? 'text-purple-400' : 'text-purple-700'
+                                        <div className="flex flex-col gap-1">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                            {category && (
+                                              <span className={`text-[8px] uppercase font-black px-1 py-0.5 rounded leading-none ${
+                                                category === 'Check-in' ? 'bg-blue-500/10 text-blue-500 border border-blue-500/20' :
+                                                category === 'Balance Settlement' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' :
+                                                category === 'Future Lock-In' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' :
+                                                'bg-zinc-500/10 text-zinc-500 border border-zinc-500/20'
+                                              }`}>
+                                                {category}
+                                              </span>
+                                            )}
+                                            <span className="break-words">{details.cleanDescription}</span>
+                                          </div>
+
+                                          {/* Detailed Financial Breakdown for Room Transactions */}
+                                          {item.type === 'Room Booking' && (
+                                            <div className={`mt-1 p-1.5 rounded-lg border flex flex-col gap-1 text-[10px] ${
+                                              isDarkMode ? 'bg-slate-900/40 border-slate-800' : 'bg-slate-50 border-slate-200'
                                             }`}>
-                                              ({isPartial ? 'Partial' : 'Full'} Deposit Paid: GH₵ {Number(item.amount || 0).toFixed(2)})
-                                            </span>
+                                              <div className="flex justify-between items-center">
+                                                <span className="text-zinc-500 uppercase font-mono tracking-tighter">Total Cost:</span>
+                                                <span className="font-bold">GH₵ {(item.totalStayCost || 0).toFixed(2)}</span>
+                                              </div>
+                                              
+                                              {category === 'Balance Settlement' ? (
+                                                <>
+                                                  <div className="flex justify-between items-center">
+                                                    <span className="text-zinc-500 uppercase font-mono tracking-tighter">Previous Deposits:</span>
+                                                    <span className="font-bold">GH₵ {(item.previousDeposits || 0).toFixed(2)}</span>
+                                                  </div>
+                                                  <div className="flex justify-between items-center">
+                                                    <span className="text-zinc-500 uppercase font-mono tracking-tighter">Settlement:</span>
+                                                    <span className="text-emerald-500 font-black">GH₵ {item.amount.toFixed(2)}</span>
+                                                  </div>
+                                                </>
+                                              ) : (
+                                                <div className="flex justify-between items-center">
+                                                  <span className="text-zinc-500 uppercase font-mono tracking-tighter">Deposit:</span>
+                                                  <span className="text-blue-500 font-black">GH₵ {item.amount.toFixed(2)}</span>
+                                                </div>
+                                              )}
+
+                                              {category === 'Future Lock-In' && (
+                                                <div className="mt-1 pt-1 border-t border-slate-700/30 flex items-center gap-1 text-amber-500 font-bold italic uppercase text-[9px]">
+                                                  <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                                  Pending Guest Report
+                                                </div>
+                                              )}
+                                              
+                                              {!item.balanceSettled && category !== 'Future Lock-In' && (item.totalStayCost || 0) > ((item.previousDeposits || 0) + item.amount) && (
+                                                <div className="flex justify-between items-center pt-1 border-t border-slate-700/30">
+                                                  <span className="text-zinc-500 uppercase font-mono tracking-tighter">Remaining:</span>
+                                                  <span className="text-rose-500 font-bold">GH₵ {((item.totalStayCost || 0) - ((item.previousDeposits || 0) + item.amount)).toFixed(2)}</span>
+                                                </div>
+                                              )}
+                                              
+                                              {item.balanceSettled && (
+                                                <div className="mt-1 pt-1 border-t border-emerald-500/30 text-emerald-500 font-bold uppercase text-[9px] text-center">
+                                                  Account Fully Settled
+                                                </div>
+                                              )}
+                                            </div>
                                           )}
+
                                           {!isFuture && details.badge && (
                                             <span className={`w-fit px-1.5 py-0.5 rounded text-[9px] font-bold ${details.badgeColor}`}>
                                               {details.badge}
@@ -8962,7 +9322,63 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                                  {details.cleanDescription || item.serviceOrType || 'Audit Entry'}
                                </div>
                             </div>
-                            {isFuture ? (
+
+                            {item.type === 'Room Booking' && (
+                              <div className={`mb-2 p-2 rounded-lg border flex flex-col gap-1.5 text-[10px] ${
+                                isDarkMode ? 'bg-slate-900/40 border-slate-800' : 'bg-slate-50 border-slate-200'
+                              }`}>
+                                <div className="flex justify-between items-center">
+                                  <span className="text-zinc-500 uppercase font-mono tracking-tighter">Total Cost:</span>
+                                  <span className="font-bold">GH₵ {(item.totalStayCost || 0).toFixed(2)}</span>
+                                </div>
+                                
+                                {(() => {
+                                  const category = item.paymentCategory || (item.isFutureBooking ? 'Future Lock-In' : (item.serviceOrType === 'Check-in Balance Settlement' ? 'Balance Settlement' : 'Check-in'));
+                                  if (category === 'Balance Settlement') {
+                                    return (
+                                      <>
+                                        <div className="flex justify-between items-center">
+                                          <span className="text-zinc-500 uppercase font-mono tracking-tighter">Prev. Deposits:</span>
+                                          <span className="font-bold">GH₵ {(item.previousDeposits || 0).toFixed(2)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center">
+                                          <span className="text-zinc-500 uppercase font-mono tracking-tighter">Settlement:</span>
+                                          <span className="text-emerald-500 font-black">GH₵ {item.amount.toFixed(2)}</span>
+                                        </div>
+                                      </>
+                                    );
+                                  }
+                                  return (
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-zinc-500 uppercase font-mono tracking-tighter">Deposit:</span>
+                                      <span className="text-blue-500 font-black">GH₵ {item.amount.toFixed(2)}</span>
+                                    </div>
+                                  );
+                                })()}
+
+                                {item.isFutureBooking && (
+                                  <div className="mt-1 pt-1 border-t border-slate-700/30 flex items-center gap-1 text-amber-500 font-bold italic uppercase text-[9px]">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                    Pending Guest Report
+                                  </div>
+                                )}
+                                
+                                {!item.balanceSettled && !item.isFutureBooking && (item.totalStayCost || 0) > ((item.previousDeposits || 0) + item.amount) && (
+                                  <div className="flex justify-between items-center pt-1 border-t border-slate-700/30">
+                                    <span className="text-zinc-500 uppercase font-mono tracking-tighter">Remaining:</span>
+                                    <span className="text-rose-500 font-bold">GH₵ {((item.totalStayCost || 0) - ((item.previousDeposits || 0) + item.amount)).toFixed(2)}</span>
+                                  </div>
+                                )}
+                                
+                                {item.balanceSettled && (
+                                  <div className="mt-1 pt-1 border-t border-emerald-500/30 text-emerald-500 font-bold uppercase text-[9px] text-center">
+                                    Account Fully Settled
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {item.type !== 'Room Booking' && isFuture ? (
                               <div className={`text-[11px] font-semibold mb-1 ${
                                 isDarkMode ? 'text-purple-400' : 'text-purple-700'
                               }`}>
@@ -8970,7 +9386,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                               </div>
                             ) : null}
                             
-                            {isFuture ? (
+                            {item.type !== 'Room Booking' && (isFuture ? (
                               <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded font-extrabold mb-2 ${
                                 isDarkMode 
                                   ? 'bg-purple-950 text-purple-300 border border-purple-700/60' 
@@ -8982,7 +9398,7 @@ export default function ManagerDashboard({ currentUser, onLogout, isDarkMode, on
                               <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold mb-2 ${details.badgeColor}`}>
                                   {details.badge}
                               </span>
-                            ) : null}
+                            ) : null)}
 
                             <div className="flex justify-between items-center text-[11px]">
                               <span className={`font-medium truncate pr-2 ${isDarkMode ? 'text-zinc-400' : 'text-slate-500'}`}>{item.guestName || '—'}</span>

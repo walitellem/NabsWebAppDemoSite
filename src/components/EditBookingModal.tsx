@@ -54,6 +54,17 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
       ));
   const [proposedAmountPaid, setProposedAmountPaid] = useState<string>(actualPaid.toString());
   const [proposedPaymentMethod, setProposedPaymentMethod] = useState<string>(booking.paymentMethod || 'Cash');
+
+  // Split payment breakdown states
+  const initialSplitCash = (booking as any).splitCashAmount !== undefined 
+    ? (booking as any).splitCashAmount 
+    : (actualPaid > 0 ? actualPaid / 2 : 0);
+  const initialSplitMomo = (booking as any).splitMomoAmount !== undefined 
+    ? (booking as any).splitMomoAmount 
+    : (actualPaid > 0 ? actualPaid / 2 : 0);
+  const [splitCashAmount, setSplitCashAmount] = useState<string>(initialSplitCash > 0 ? initialSplitCash.toString() : '0');
+  const [splitMomoAmount, setSplitMomoAmount] = useState<string>(initialSplitMomo > 0 ? initialSplitMomo.toString() : '0');
+
   const [reason, setReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -135,7 +146,9 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
           deposit: parseFloat(proposedAmountPaid),
           balance_due: Math.max(0, numericProposedPrice - parseFloat(proposedAmountPaid)),
           pending_payment: Math.max(0, numericProposedPrice - parseFloat(proposedAmountPaid)),
-          paymentMethod: proposedPaymentMethod
+          paymentMethod: proposedPaymentMethod,
+          splitCashAmount: parseFloat(splitCashAmount) || 0,
+          splitMomoAmount: parseFloat(splitMomoAmount) || 0
         };
 
         // Update Firestore
@@ -150,18 +163,19 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
               matchingRevs.push({ id: docSnap.id, ...docSnap.data() });
             });
             const totalCurrentRev = matchingRevs.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+            const baselinePaid = Math.max(totalCurrentRev, actualPaid);
             
             // Sync RoomRevenue changes for payment method and amount
             const hasPaymentMethodChange = proposedPaymentMethod && (
               !booking.paymentMethod ||
               proposedPaymentMethod.trim().toLowerCase() !== booking.paymentMethod.trim().toLowerCase()
             );
-            const hasAmountChange = parseFloat(proposedAmountPaid) !== actualPaid || parseFloat(proposedAmountPaid) !== totalCurrentRev;
+            const hasAmountChange = parseFloat(proposedAmountPaid) !== actualPaid || parseFloat(proposedAmountPaid) !== baselinePaid;
             
             if (hasPaymentMethodChange || hasAmountChange) {
               const batch = writeBatch(db);
               const proposedAmt = parseFloat(proposedAmountPaid) || 0;
-              const amtDiff = proposedAmt - totalCurrentRev;
+              const amtDiff = proposedAmt - baselinePaid;
               let hasActions = false;
               
               const userAssignedBranch = currentUser?.assignedBranch || currentUser?.branch || booking.branch || 'Base Lodge';
@@ -173,7 +187,11 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
                     // But first, apply any payment method changes to the existing records
                     if (hasPaymentMethodChange) {
                       for (const rev of matchingRevs) {
-                        batch.update(doc(db, 'RoomRevenue', rev.id), { paymentMethod: proposedPaymentMethod });
+                        batch.update(doc(db, 'RoomRevenue', rev.id), { 
+                          paymentMethod: proposedPaymentMethod,
+                          splitCashAmount: proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitCashAmount) || 0) : 0,
+                          splitMomoAmount: proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitMomoAmount) || 0) : 0
+                        });
                       }
                     }
                     // Create new record
@@ -193,6 +211,8 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
                       revenueType: 'BalanceSettlement',
                       revenueSubType: '',
                       paymentMethod: proposedPaymentMethod || booking.paymentMethod || 'Cash',
+                      splitCashAmount: proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitCashAmount) || 0) : 0,
+                      splitMomoAmount: proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitMomoAmount) || 0) : 0,
                       isFutureBooking: false,
                       isPartialDeposit: false,
                       timestamp: getFormattedDateTime(),
@@ -224,7 +244,11 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
                       
                       const updateData: any = {};
                       if (newAmount !== currentRevAmount) updateData.amount = newAmount;
-                      if (hasPaymentMethodChange) updateData.paymentMethod = proposedPaymentMethod;
+                      if (hasPaymentMethodChange) {
+                        updateData.paymentMethod = proposedPaymentMethod;
+                        updateData.splitCashAmount = proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitCashAmount) || 0) : 0;
+                        updateData.splitMomoAmount = proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitMomoAmount) || 0) : 0;
+                      }
                       
                       if (Object.keys(updateData).length > 0) {
                         batch.update(doc(db, 'RoomRevenue', rev.id), updateData);
@@ -234,7 +258,11 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
                   }
                 } else if (hasPaymentMethodChange) {
                   for (const rev of matchingRevs) {
-                    batch.update(doc(db, 'RoomRevenue', rev.id), { paymentMethod: proposedPaymentMethod });
+                    batch.update(doc(db, 'RoomRevenue', rev.id), { 
+                      paymentMethod: proposedPaymentMethod,
+                      splitCashAmount: proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitCashAmount) || 0) : 0,
+                      splitMomoAmount: proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitMomoAmount) || 0) : 0
+                    });
                     hasActions = true;
                   }
                 }
@@ -256,6 +284,8 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
                   revenueType: 'BalanceSettlement',
                   revenueSubType: '',
                   paymentMethod: proposedPaymentMethod || booking.paymentMethod || 'Cash',
+                  splitCashAmount: proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitCashAmount) || 0) : 0,
+                  splitMomoAmount: proposedPaymentMethod === 'Split (Cash + Momo)' ? (parseFloat(splitMomoAmount) || 0) : 0,
                   isFutureBooking: false,
                   isPartialDeposit: false,
                   timestamp: getFormattedDateTime(),
@@ -356,6 +386,8 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
         proposedPaymentStatus,
         proposedAmountPaid: parseFloat(proposedAmountPaid),
         proposedPaymentMethod,
+        splitCashAmount: parseFloat(splitCashAmount) || 0,
+        splitMomoAmount: parseFloat(splitMomoAmount) || 0,
 
         guestName: guestName.trim(),
         guestContact: guestContact.trim(),
@@ -604,33 +636,169 @@ export const EditBookingModal: React.FC<EditBookingModalProps> = ({
                     value={proposedPaymentStatus} 
                     onChange={(e) => {
                       const val = e.target.value as PaymentStatus;
-                      setProposedPaymentStatus(val);
-                      if (val === 'Unpaid') {
+                      const numPrice = numericProposedPrice;
+                      const currentAmt = parseFloat(proposedAmountPaid) || 0;
+
+                      if (val === 'Paid') {
+                        if (currentAmt < numPrice) {
+                          if (currentAmt === 0) {
+                            setProposedAmountPaid(numPrice.toString());
+                            setProposedPaymentStatus('Paid');
+                          } else {
+                            setProposedPaymentStatus('Partial');
+                          }
+                        } else {
+                          setProposedPaymentStatus('Paid');
+                        }
+                      } else if (val === 'Unpaid') {
+                        setProposedPaymentStatus('Unpaid');
                         setProposedAmountPaid('0');
                         setProposedPaymentMethod('Pending / Unpaid');
+                      } else if (val === 'Partially Paid (Split)') {
+                        setProposedPaymentMethod('Split (Cash + Momo)');
+                        if (currentAmt >= numPrice) {
+                          setProposedPaymentStatus('Paid');
+                        } else {
+                          setProposedPaymentStatus('Partially Paid (Split)');
+                          if (currentAmt === 0) {
+                            setProposedAmountPaid((numPrice * 0.5).toFixed(2));
+                          }
+                        }
+                      } else {
+                        setProposedPaymentStatus(val);
+                        if (currentAmt >= numPrice || currentAmt === 0) {
+                          setProposedAmountPaid((numPrice * 0.5).toFixed(2));
+                        }
                       }
                     }} 
                     className={`w-full px-3 py-2 rounded-xl text-xs border ${isDarkMode ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-slate-300'}`}
                   >
-                    <option value="Paid">Paid</option>
-                    <option value="Unpaid">Unpaid</option>
+                    <option value="Paid">Full</option>
                     <option value="Partial">Partial</option>
-                    <option value="Partially Paid (50% Deposit)">Partially Paid (50% Deposit)</option>
+                    <option value="Partially Paid (Split)">Split</option>
+                    <option value="Unpaid">Unpaid</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold font-mono text-zinc-500 dark:text-zinc-400 mb-1">Proposed Amount (GH₵)</label>
-                  <input type="number" value={proposedAmountPaid} onChange={(e) => setProposedAmountPaid(e.target.value)} className={`w-full px-3 py-2 rounded-xl text-xs border ${isDarkMode ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-slate-300'}`} />
+                  <input 
+                    type="number" 
+                    value={proposedAmountPaid} 
+                    onChange={(e) => {
+                      const valStr = e.target.value;
+                      setProposedAmountPaid(valStr);
+                      const valNum = parseFloat(valStr) || 0;
+                      const numPrice = numericProposedPrice;
+
+                      if (valNum < numPrice && valNum > 0) {
+                        if (proposedPaymentStatus === 'Paid') {
+                          setProposedPaymentStatus(proposedPaymentMethod === 'Split (Cash + Momo)' ? 'Partially Paid (Split)' : 'Partial');
+                        }
+                      } else if (valNum >= numPrice && numPrice > 0) {
+                        if (proposedPaymentStatus === 'Partial' || proposedPaymentStatus === 'Unpaid' || proposedPaymentStatus === 'Partially Paid (Split)' || proposedPaymentStatus?.includes('Partial')) {
+                          setProposedPaymentStatus('Paid');
+                        }
+                      } else if (valNum === 0 && proposedPaymentStatus !== 'Unpaid') {
+                        setProposedPaymentStatus('Unpaid');
+                      }
+                    }} 
+                    className={`w-full px-3 py-2 rounded-xl text-xs border ${isDarkMode ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-slate-300'}`} 
+                  />
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold font-mono text-zinc-500 dark:text-zinc-400 mb-1">Proposed Method</label>
-                  <select value={proposedPaymentMethod} onChange={(e) => setProposedPaymentMethod(e.target.value)} className={`w-full px-3 py-2 rounded-xl text-xs border ${isDarkMode ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-slate-300'}`}>
+                  <select 
+                    value={proposedPaymentMethod} 
+                    onChange={(e) => {
+                      const method = e.target.value;
+                      setProposedPaymentMethod(method);
+                      if (method === 'Split (Cash + Momo)') {
+                        const total = (parseFloat(splitCashAmount) || 0) + (parseFloat(splitMomoAmount) || 0);
+                        if (total === 0 && numericProposedPrice > 0) {
+                          const half = (numericProposedPrice / 2).toFixed(2);
+                          setSplitCashAmount(half);
+                          setSplitMomoAmount(half);
+                          setProposedAmountPaid(numericProposedPrice.toFixed(2));
+                          setProposedPaymentStatus('Paid');
+                        } else {
+                          setProposedAmountPaid(total.toString());
+                          setProposedPaymentStatus(total >= numericProposedPrice ? 'Paid' : 'Partially Paid (Split)');
+                        }
+                      }
+                    }} 
+                    className={`w-full px-3 py-2 rounded-xl text-xs border ${isDarkMode ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-slate-300'}`}
+                  >
                     <option value="Cash">Cash</option>
                     <option value="Mobile Money">Mobile Money</option>
+                    <option value="Split (Cash + Momo)">Split (Cash + Momo)</option>
                     <option value="Pending / Unpaid">Pending / Unpaid</option>
                   </select>
                 </div>
               </div>
+
+              {/* Secondary Split Inputs (Cash Amount & MoMo Amount) */}
+              {(proposedPaymentMethod === 'Split (Cash + Momo)' || proposedPaymentStatus === 'Partially Paid (Split)') && (
+                <div className="mt-3.5 p-3 rounded-xl bg-purple-500/10 border border-purple-500/20">
+                  <div className="text-xs font-bold text-purple-600 dark:text-purple-400 mb-2.5 flex items-center justify-between">
+                    <span>Split Payment Breakdown</span>
+                    <span className="font-mono text-[11px]">
+                      Total Split: GH₵{((parseFloat(splitCashAmount) || 0) + (parseFloat(splitMomoAmount) || 0)).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-300 mb-1">Cash Amount (GH₵)</label>
+                      <input 
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={splitCashAmount}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSplitCashAmount(val);
+                          const c = parseFloat(val) || 0;
+                          const m = parseFloat(splitMomoAmount) || 0;
+                          const total = c + m;
+                          setProposedAmountPaid(total.toFixed(2));
+                          if (total >= numericProposedPrice && numericProposedPrice > 0) {
+                            setProposedPaymentStatus('Paid');
+                          } else if (total > 0) {
+                            setProposedPaymentStatus('Partially Paid (Split)');
+                          } else {
+                            setProposedPaymentStatus('Unpaid');
+                          }
+                        }}
+                        className={`w-full px-3 py-1.5 rounded-lg text-xs border font-mono ${isDarkMode ? 'bg-zinc-900 border-zinc-700 text-white' : 'bg-white border-slate-300'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-300 mb-1">Mobile Money Amount (GH₵)</label>
+                      <input 
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={splitMomoAmount}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSplitMomoAmount(val);
+                          const c = parseFloat(splitCashAmount) || 0;
+                          const m = parseFloat(val) || 0;
+                          const total = c + m;
+                          setProposedAmountPaid(total.toFixed(2));
+                          if (total >= numericProposedPrice && numericProposedPrice > 0) {
+                            setProposedPaymentStatus('Paid');
+                          } else if (total > 0) {
+                            setProposedPaymentStatus('Partially Paid (Split)');
+                          } else {
+                            setProposedPaymentStatus('Unpaid');
+                          }
+                        }}
+                        className={`w-full px-3 py-1.5 rounded-lg text-xs border font-mono ${isDarkMode ? 'bg-zinc-900 border-zinc-700 text-white' : 'bg-white border-slate-300'}`}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
